@@ -8,6 +8,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import com.beqa.body.BuildConfig
 import com.beqa.body.a11y.BodyAccessibilityService
+import com.beqa.body.action.BodyActionExecutor
 import com.beqa.body.notify.BodyNotificationListener
 import com.beqa.body.screen.BodyScreenReader
 import com.beqa.body.security.BridgeTokenStore
@@ -78,6 +79,41 @@ class BridgeHttpServer(
                 ))
                 "/describe_node" -> reply(200, BodyScreenReader.describeNode(qInt(session, "id", -1)))
                 "/screen_diff" -> reply(200, BodyScreenReader.screenDiff(qStr(session, "hash", "")))
+                "/tap" -> reply(200, BodyActionExecutor.tap(
+                    id = qIntOrNull(session, "id"),
+                    x = qIntOrNull(session, "x"),
+                    y = qIntOrNull(session, "y"),
+                    fallbackText = qStrOrNull(session, "text")
+                ))
+                "/long_press" -> reply(200, BodyActionExecutor.longPress(
+                    id = qIntOrNull(session, "id"),
+                    x = qIntOrNull(session, "x"),
+                    y = qIntOrNull(session, "y"),
+                    durationMs = qInt(session, "duration", 600)
+                ))
+                "/type_text" -> reply(200, BodyActionExecutor.typeText(
+                    text = qStr(session, "text", ""),
+                    id = qIntOrNull(session, "id"),
+                    clearFirst = qBool(session, "clear", true),
+                    submit = qBool(session, "submit", false)
+                ))
+                "/scroll" -> reply(200, BodyActionExecutor.scroll(
+                    direction = qStr(session, "direction", "down"),
+                    id = qIntOrNull(session, "id"),
+                    distance = qStr(session, "distance", "medium")
+                ))
+                "/swipe" -> reply(200, BodyActionExecutor.swipe(
+                    direction = qStr(session, "direction", "up"),
+                    distance = qStr(session, "distance", "medium")
+                ))
+                "/press_key" -> reply(200, BodyActionExecutor.pressKey(qStr(session, "key", "")))
+                "/wait_for" -> reply(200, BodyActionExecutor.waitFor(
+                    text = qStrOrNull(session, "text"),
+                    resourceId = qStrOrNull(session, "rid"),
+                    app = qStrOrNull(session, "app"),
+                    gone = qBool(session, "gone", false),
+                    timeoutMs = qInt(session, "timeout", 5000)
+                ))
                 else -> reply(404, error("not_found"))
             }
         } catch (e: Exception) {
@@ -90,7 +126,7 @@ class BridgeHttpServer(
             .put("ok", true)
             .put("app", "body")
             .put("version", BuildConfig.VERSION_NAME)
-            .put("milestone", "M3")
+            .put("milestone", "M4")
             .put(
                 "capabilities",
                 JSONObject()
@@ -136,6 +172,8 @@ class BridgeHttpServer(
     private fun qStr(s: IHTTPSession, k: String, d: String): String = qStrOrNull(s, k) ?: d
 
     private fun qInt(s: IHTTPSession, k: String, d: Int): Int = qStrOrNull(s, k)?.toIntOrNull() ?: d
+
+    private fun qIntOrNull(s: IHTTPSession, k: String): Int? = qStrOrNull(s, k)?.toIntOrNull()
 
     private fun qBool(s: IHTTPSession, k: String, d: Boolean): Boolean =
         qStrOrNull(s, k)?.let { it == "1" || it.equals("true", true) } ?: d

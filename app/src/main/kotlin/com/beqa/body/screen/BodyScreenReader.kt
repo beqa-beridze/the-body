@@ -391,6 +391,36 @@ object BodyScreenReader {
         }
     }
 
+    /**
+     * Resolve a Set-of-Marks id to a LIVE node (for acting on it), by navigating the
+     * StableKey's treepath from the window root and sanity-checking the class. Returns
+     * null if the id is unknown or the tree has shifted (caller should re-read_screen).
+     */
+    fun resolveNode(id: Int): AccessibilityNodeInfo? {
+        val svc = BodyAccessibilityService.instance ?: return null
+        synchronized(lock) {
+            val key = idMap[id] ?: return null
+            val parts = key.split("|", limit = 4)
+            val wantClass = if (parts.size > 1) parts[1] else ""
+            val treepath = if (parts.size > 2) parts[2] else return null
+            val idxs = treepath.split(".").mapNotNull { it.toIntOrNull() }
+            if (idxs.isEmpty()) return null
+            val roots = safe(emptyList<AccessibilityNodeInfo>()) { svc.allRoots() }
+            var node: AccessibilityNodeInfo = roots.getOrNull(idxs[0]) ?: return null
+            for (k in 1 until idxs.size) {
+                node = safe<AccessibilityNodeInfo?>(null) { node.getChild(idxs[k]) } ?: return null
+            }
+            if (wantClass.isNotEmpty() && shortClass(classNameOf(node)) != wantClass) return null
+            return node
+        }
+    }
+
+    /** Current structural screen hash (for before/after action verification). */
+    fun currentHash(): String {
+        val svc = BodyAccessibilityService.instance ?: return ""
+        synchronized(lock) { return computeScreenHash(svc) }
+    }
+
     private fun staleResult(): JSONObject =
         JSONObject()
             .put("ok", false)
