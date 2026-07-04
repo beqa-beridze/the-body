@@ -1,5 +1,5 @@
 package com.beqa.body
 object BuildConfig {
-    const val VERSION_CODE = 7
-    const val VERSION_NAME = "0.7.0-m6"
+    const val VERSION_CODE = 8
+    const val VERSION_NAME = "1.0.0-m7"
 }

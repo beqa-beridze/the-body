@@ -1,0 +1,25 @@
+name: android-body
+version: 0.1.0
+description: "Control this Android phone via the local Body bridge on 127.0.0.1:8765 (accessibility screen-read + actions, notifications, SMS). Reads the bearer token from $ANDROID_BRIDGE_TOKEN or ~/.config/body/bridge_token."
+author: beqa
+kind: standalone
+requires_env: []
+provides_tools:
+  - android_health
+  - android_state
+  - android_read_screen
+  - android_find_nodes
+  - android_describe_node
+  - android_screen_diff
+  - android_tap
+  - android_type_text
+  - android_scroll
+  - android_swipe
+  - android_press_key
+  - android_wait_for
+  - android_notifications
+  - android_notification_reply
+  - android_send_sms
+  - android_launch
+  - android_list_apps
+  - android_current_app

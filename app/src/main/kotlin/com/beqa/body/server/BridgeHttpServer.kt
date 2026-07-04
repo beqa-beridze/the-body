@@ -9,6 +9,7 @@ import android.os.SystemClock
 import com.beqa.body.BuildConfig
 import com.beqa.body.a11y.BodyAccessibilityService
 import com.beqa.body.action.BodyActionExecutor
+import com.beqa.body.action.BodyAppLauncher
 import com.beqa.body.action.ExternalActions
 import com.beqa.body.notify.BodyNotificationListener
 import com.beqa.body.notify.NotificationReader
@@ -115,6 +116,16 @@ class BridgeHttpServer(
                     val confirm = payload.optString("confirm").ifBlank { null }
                     reply(200, ExternalActions.route(path, payload, confirm, appContext))
                 }
+                "/launch" -> {
+                    val payload = payloadOf(session)
+                    reply(200, BodyAppLauncher.launch(
+                        pkg = payload.optString("pkg").ifBlank { null },
+                        url = payload.optString("url").ifBlank { null },
+                        context = appContext
+                    ))
+                }
+                "/list_apps" -> reply(200, BodyAppLauncher.listApps(qStrOrNull(session, "filter"), appContext))
+                "/current_app" -> reply(200, BodyAppLauncher.currentApp())
                 "/wait_for" -> reply(200, BodyActionExecutor.waitFor(
                     text = qStrOrNull(session, "text"),
                     resourceId = qStrOrNull(session, "rid"),
@@ -134,7 +145,7 @@ class BridgeHttpServer(
             .put("ok", true)
             .put("app", "body")
             .put("version", BuildConfig.VERSION_NAME)
-            .put("milestone", "M6")
+            .put("milestone", "M7")
             .put(
                 "capabilities",
                 JSONObject()
