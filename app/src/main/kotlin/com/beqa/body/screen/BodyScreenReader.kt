@@ -7,267 +7,91 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Serializes / queries the live AccessibilityService UI tree into compact JSON.
+ * BodyScreenReader — converts the live accessibility tree into compact JSON
+ * using the Set-of-Marks technique: every emitted element gets a small integer
+ * label, and the label -> StableKey map lets callers re-resolve the live node
+ * later (resolveNode / describeNode) without brittle paths.
  *
- * Framework + org.json only. No AndroidX, no Gradle. Set-of-Marks: each dump/query
- * assigns small integer ids to nodes and remembers a StableKey per id so a later
- * describeNode() can re-locate the (possibly moved) node across a re-read.
+ * StableKey format: "pkg|shortClass|treepath|l_t_r_b"
+ *   - treepath is the child-index path from the root's index in allRoots(),
+ *     e.g. "0" (root itself) or "0.2.1".
+ *
+ * Pure tree traversal + JSON shaping; Android framework + org.json only.
  */
 object BodyScreenReader {
 
-    private val lock = Any()
-
-    // ---- Set-of-Marks state (guarded by [lock]) ----
-    private var generation: Int = 0
-    private val idMap: MutableMap<Int, String> = LinkedHashMap()
-
-    private const val HARD_MAX = 2000
-    private const val DEFAULT_MAX = 500
     private const val SYSTEM_UI_PKG = "com.android.systemui"
 
-    // ------------------------------------------------------------------
-    // Safe property readers (framework throws on stale nodes -> swallow).
-    // ------------------------------------------------------------------
+    private val lock = Any()
 
-    private inline fun <T> safe(default: T, block: () -> T): T =
-        try { block() } catch (t: Throwable) { default }
+    /** Bumped every time the label map is rebuilt (readScreen / findNodes). */
+    private var generation: Int = 0
 
-    private fun shortClass(cls: CharSequence?): String =
-        (cls?.toString() ?: "").substringAfterLast('.')
+    /** Set-of-Marks state: integer label -> StableKey. */
+    private val idMap: MutableMap<Int, String> = HashMap()
 
-    private fun classNameOf(node: AccessibilityNodeInfo): String =
-        safe("") { node.className?.toString() ?: "" }
-
-    private fun pkgOf(node: AccessibilityNodeInfo): String =
-        safe("") { node.packageName?.toString() ?: "" }
-
-    private fun textOf(node: AccessibilityNodeInfo): String =
-        safe("") { node.text?.toString() ?: "" }
-
-    private fun descOf(node: AccessibilityNodeInfo): String =
-        safe("") { node.contentDescription?.toString() ?: "" }
-
-    private fun ridOf(node: AccessibilityNodeInfo): String? =
-        safe(null) { node.viewIdResourceName }
-
-    private fun hintOf(node: AccessibilityNodeInfo): String =
-        safe("") { node.hintText?.toString() ?: "" }
-
-    private fun boundsOf(node: AccessibilityNodeInfo): Rect {
-        val r = Rect()
-        safe(Unit) { node.getBoundsInScreen(r) }
-        return r
-    }
-
-    private fun packState(node: AccessibilityNodeInfo): String {
-        val sb = StringBuilder(8)
-        if (safe(false) { node.isClickable })     sb.append('c')
-        if (safe(false) { node.isEditable })      sb.append('e')
-        if (safe(false) { node.isScrollable })    sb.append('s')
-        if (safe(false) { node.isCheckable })     sb.append('k')
-        if (safe(false) { node.isFocusable })     sb.append('f')
-        if (!safe(true)  { node.isEnabled })      sb.append('d')
-        if (safe(false) { node.isSelected })      sb.append('x')
-        if (safe(false) { node.isLongClickable }) sb.append('p')
-        return sb.toString()
-    }
-
-    private fun isInteresting(node: AccessibilityNodeInfo): Boolean {
-        if (safe(false) { node.isClickable }) return true
-        if (safe(false) { node.isEditable }) return true
-        if (safe(false) { node.isCheckable }) return true
-        if (safe(false) { node.isScrollable }) return true
-        if (textOf(node).isNotBlank()) return true
-        if (descOf(node).isNotBlank()) return true
-        return false
-    }
-
-    private fun isVisibleUsable(node: AccessibilityNodeInfo): Boolean {
-        if (!safe(false) { node.isVisibleToUser }) return false
-        val b = boundsOf(node)
-        return b.width() > 0 && b.height() > 0
-    }
-
-    // ------------------------------------------------------------------
-    // Identity + serialization
-    // ------------------------------------------------------------------
-
-    /** "packageName|shortClass|treepath|l_t_r_b" — stable-ish across re-reads. */
-    private fun stableKey(node: AccessibilityNodeInfo, treepath: String): String {
-        val pkg = pkgOf(node)
-        val sc = shortClass(classNameOf(node))
-        val b = boundsOf(node)
-        return "$pkg|$sc|$treepath|${b.left}_${b.top}_${b.right}_${b.bottom}"
-    }
-
-    /** CompactNode: omit empty/false fields for token savings. */
-    private fun compactNode(node: AccessibilityNodeInfo, id: Int, includeBounds: Boolean): JSONObject {
-        val o = JSONObject()
-        o.put("id", id)
-        val role = shortClass(classNameOf(node))
-        if (role.isNotBlank()) o.put("role", role)
-        val text = textOf(node); if (text.isNotBlank()) o.put("text", text)
-        val desc = descOf(node); if (desc.isNotBlank()) o.put("desc", desc)
-        val rid = ridOf(node); if (rid != null) o.put("rid", rid)
-        val hint = hintOf(node); if (hint.isNotBlank()) o.put("hint", hint)
-        val state = packState(node); if (state.isNotEmpty()) o.put("state", state)
-        if (safe(false) { node.isCheckable }) o.put("checked", safe(false) { node.isChecked })
-        if (includeBounds) {
-            val b = boundsOf(node)
-            o.put("bounds", JSONArray().put(b.left).put(b.top).put(b.right).put(b.bottom))
-        }
-        return o
-    }
-
-    // ------------------------------------------------------------------
-    // Walk state
-    // ------------------------------------------------------------------
-
-    private class Walk(
-        val includeBounds: Boolean,
-        val includeSystemUi: Boolean,
-        val maxNodes: Int
-    ) {
-        var nextId = 1
-        var count = 0
+    /** Emission budget for a single traversal. */
+    private class Budget(val max: Int) {
+        var emitted = 0
         var truncated = false
-        val flat = JSONArray()
-        val marks = LinkedHashMap<Int, String>()
-    }
-
-    /** Interactive mode: surface only interesting nodes (flat), traverse everything. */
-    private fun walkInteractive(node: AccessibilityNodeInfo?, treepath: String, w: Walk) {
-        if (node == null || w.truncated) return
-        if (!w.includeSystemUi && pkgOf(node) == SYSTEM_UI_PKG) return
-        if (!isVisibleUsable(node)) return
-
-        if (isInteresting(node)) {
-            if (w.count >= w.maxNodes) {
-                w.truncated = true
-                return
-            }
-            val id = w.nextId++
-            w.marks[id] = stableKey(node, treepath)
-            w.flat.put(compactNode(node, id, w.includeBounds))
-            w.count++
-        }
-
-        val cc = safe(0) { node.childCount }
-        for (i in 0 until cc) {
-            val child = safe<AccessibilityNodeInfo?>(null) { node.getChild(i) } ?: continue
-            walkInteractive(child, "$treepath.$i", w)
-            safe(Unit) { child.recycle() }
-        }
-    }
-
-    /** Full mode: emit every visible node with nested children. */
-    private fun walkFull(node: AccessibilityNodeInfo?, treepath: String, w: Walk): JSONObject? {
-        if (node == null) return null
-        if (!w.includeSystemUi && pkgOf(node) == SYSTEM_UI_PKG) return null
-        if (!isVisibleUsable(node)) return null
-        if (w.count >= w.maxNodes) { w.truncated = true; return null }
-
-        val id = w.nextId++
-        w.marks[id] = stableKey(node, treepath)
-        val cn = compactNode(node, id, w.includeBounds)
-        w.count++
-
-        val childArr = JSONArray()
-        val cc = safe(0) { node.childCount }
-        for (i in 0 until cc) {
-            val child = safe<AccessibilityNodeInfo?>(null) { node.getChild(i) } ?: continue
-            val cj = walkFull(child, "$treepath.$i", w)
-            if (cj != null) childArr.put(cj)
-            safe(Unit) { child.recycle() }
-        }
-        if (childArr.length() > 0) cn.put("children", childArr)
-        return cn
-    }
-
-    // ------------------------------------------------------------------
-    // Structural hash (over pruned interactive set; ignores id + bounds)
-    // ------------------------------------------------------------------
-
-    private fun hashWalk(node: AccessibilityNodeInfo?, sb: StringBuilder) {
-        if (node == null) return
-        if (pkgOf(node) == SYSTEM_UI_PKG) return
-        if (!isVisibleUsable(node)) return
-        if (isInteresting(node)) {
-            val checked = if (safe(false) { node.isCheckable }) safe(false) { node.isChecked }.toString() else ""
-            sb.append(shortClass(classNameOf(node))).append('|')
-                .append(textOf(node)).append('|')
-                .append(descOf(node)).append('|')
-                .append(ridOf(node) ?: "").append('|')
-                .append(packState(node)).append('|')
-                .append(checked).append(';')
-        }
-        val cc = safe(0) { node.childCount }
-        for (i in 0 until cc) {
-            val child = safe<AccessibilityNodeInfo?>(null) { node.getChild(i) } ?: continue
-            hashWalk(child, sb)
-            safe(Unit) { child.recycle() }
-        }
-    }
-
-    private fun computeScreenHash(svc: BodyAccessibilityService): String {
-        val sb = StringBuilder(256)
-        val roots = safe(emptyList<AccessibilityNodeInfo>()) { svc.allRoots() }
-        roots.forEach { hashWalk(it, sb) }
-        return Integer.toHexString(sb.toString().hashCode())
     }
 
     // ------------------------------------------------------------------
     // Public API
     // ------------------------------------------------------------------
 
+    /**
+     * Read the current screen. mode == "full" returns a nested tree; anything
+     * else returns a flat list of "interesting" (interactive/labelled) nodes.
+     */
     fun readScreen(
         mode: String = "interactive",
         includeBounds: Boolean = false,
         includeSystemUi: Boolean = false,
-        maxNodes: Int = DEFAULT_MAX
+        maxNodes: Int = 500
     ): JSONObject {
-        val svc = BodyAccessibilityService.instance
-            ?: return JSONObject().put("ok", false).put("error", "service_not_running")
-
-        val cap = maxNodes.coerceIn(1, HARD_MAX)
+        val svc = BodyAccessibilityService.instance ?: return notRunning()
+        val cap = maxNodes.coerceIn(1, 2000)
         synchronized(lock) {
-            generation++
+            generation += 1
             idMap.clear()
-
-            val hash = computeScreenHash(svc)
-            val w = Walk(includeBounds, includeSystemUi, cap)
-            val roots = safe(emptyList<AccessibilityNodeInfo>()) { svc.allRoots() }
-
+            val roots = safe { svc.allRoots() } ?: emptyList()
+            val budget = Budget(cap)
             val out = JSONObject()
             out.put("ok", true)
-            out.put("app", svc.foregroundPackage ?: JSONObject.NULL)
-            out.put("screen_hash", hash)
+            out.put("app", (safe { svc.foregroundPackage } as Any?) ?: JSONObject.NULL)
+            out.put("screen_hash", hashRoots(roots, includeSystemUi))
             out.put("generation", generation)
-
             if (mode == "full") {
-                val rootJsons = ArrayList<JSONObject>()
-                roots.forEachIndexed { idx, r ->
-                    walkFull(r, idx.toString(), w)?.let { rootJsons.add(it) }
+                val trees = JSONArray()
+                for ((idx, root) in roots.withIndex()) {
+                    val t = buildFullNode(root, idx.toString(), includeBounds, includeSystemUi, budget)
+                    if (t != null) trees.put(t)
                 }
-                val tree: JSONObject = when (rootJsons.size) {
-                    1 -> rootJsons[0]
-                    else -> JSONObject()
-                        .put("role", "window_roots")
-                        .put("children", JSONArray(rootJsons))
+                val tree: Any = if (trees.length() == 1) {
+                    trees.get(0)
+                } else {
+                    // Multiple (or zero) windows: wrap in a synthetic container.
+                    JSONObject().put("role", "windows").put("children", trees)
                 }
                 out.put("tree", tree)
             } else {
-                roots.forEachIndexed { idx, r -> walkInteractive(r, idx.toString(), w) }
-                out.put("elements", w.flat)
+                val elements = JSONArray()
+                for ((idx, root) in roots.withIndex()) {
+                    collectFlat(root, idx.toString(), includeBounds, includeSystemUi, elements, budget)
+                }
+                out.put("elements", elements)
             }
-
-            idMap.putAll(w.marks)
-            out.put("node_count", w.count)
-            out.put("truncated", w.truncated)
+            out.put("node_count", budget.emitted)
+            out.put("truncated", budget.truncated)
             return out
         }
     }
 
+    /**
+     * Search the current trees. All provided selectors must match (AND).
+     * Matches get fresh labels under a new generation.
+     */
     fun findNodes(
         text: String? = null,
         contentDesc: String? = null,
@@ -277,255 +101,475 @@ object BodyScreenReader {
         exact: Boolean = false,
         limit: Int = 20
     ): JSONObject {
-        val svc = BodyAccessibilityService.instance
-            ?: return JSONObject().put("ok", false).put("error", "service_not_running")
-
-        val cap = limit.coerceIn(1, HARD_MAX)
+        val svc = BodyAccessibilityService.instance ?: return notRunning()
+        val cap = limit.coerceIn(1, 2000)
         synchronized(lock) {
-            generation++
+            generation += 1
             idMap.clear()
-
+            val roots = safe { svc.allRoots() } ?: emptyList()
+            val budget = Budget(cap)
             val matches = JSONArray()
-            val next = intArrayOf(1)
-            val roots = safe(emptyList<AccessibilityNodeInfo>()) { svc.allRoots() }
-            roots.forEachIndexed { idx, root ->
-                findWalk(root, idx.toString(), matches, next, cap,
-                    text, contentDesc, resourceId, className, clickableOnly, exact)
+            for ((idx, root) in roots.withIndex()) {
+                findWalk(
+                    root, idx.toString(),
+                    text, contentDesc, resourceId, className,
+                    clickableOnly, exact, matches, budget
+                )
             }
-
-            val out = JSONObject()
-            out.put("ok", true)
-            out.put("count", matches.length())
-            out.put("generation", generation)
-            out.put("matches", matches)
-            return out
-        }
-    }
-
-    private fun findWalk(
-        node: AccessibilityNodeInfo?,
-        treepath: String,
-        matches: JSONArray,
-        next: IntArray,
-        limit: Int,
-        text: String?, contentDesc: String?, resourceId: String?,
-        className: String?, clickableOnly: Boolean, exact: Boolean
-    ) {
-        if (node == null || matches.length() >= limit) return
-        if (pkgOf(node) == SYSTEM_UI_PKG) return
-        if (!isVisibleUsable(node)) return
-
-        if (nodeMatches(node, text, contentDesc, resourceId, className, clickableOnly, exact)) {
-            val id = next[0]++
-            idMap[id] = stableKey(node, treepath)
-            matches.put(compactNode(node, id, includeBounds = false))
-            if (matches.length() >= limit) return
-        }
-
-        val cc = safe(0) { node.childCount }
-        for (i in 0 until cc) {
-            if (matches.length() >= limit) break
-            val child = safe<AccessibilityNodeInfo?>(null) { node.getChild(i) } ?: continue
-            findWalk(child, "$treepath.$i", matches, next, limit,
-                text, contentDesc, resourceId, className, clickableOnly, exact)
-            safe(Unit) { child.recycle() }
-        }
-    }
-
-    private fun strMatch(hay: String, needle: String, exact: Boolean): Boolean =
-        if (exact) hay.equals(needle, ignoreCase = true) else hay.contains(needle, ignoreCase = true)
-
-    private fun nodeMatches(
-        node: AccessibilityNodeInfo,
-        text: String?, contentDesc: String?, resourceId: String?,
-        className: String?, clickableOnly: Boolean, exact: Boolean
-    ): Boolean {
-        if (clickableOnly && !safe(false) { node.isClickable }) return false
-        if (text != null && !strMatch(textOf(node), text, exact)) return false
-        if (contentDesc != null && !strMatch(descOf(node), contentDesc, exact)) return false
-        if (resourceId != null) {
-            val rid = ridOf(node) ?: ""
-            val leaf = rid.substringAfterLast('/')
-            val ok = if (exact) rid == resourceId || leaf == resourceId
-            else rid.contains(resourceId, true) || leaf.contains(resourceId, true)
-            if (!ok) return false
-        }
-        if (className != null) {
-            val full = classNameOf(node)
-            val sc = shortClass(full)
-            val ok = if (exact) full == className || sc == className
-            else full.contains(className, true) || sc.contains(className, true)
-            if (!ok) return false
-        }
-        return true
-    }
-
-    fun describeNode(id: Int): JSONObject {
-        val svc = BodyAccessibilityService.instance
-            ?: return JSONObject().put("ok", false).put("error", "service_not_running")
-
-        synchronized(lock) {
-            val key = idMap[id]
-                ?: return staleResult()
-
-            // parse StableKey: pkg|shortClass|treepath|bounds
-            val parts = key.split("|", limit = 4)
-            val wantClass = if (parts.size > 1) parts[1] else ""
-            val wantPath = if (parts.size > 2) parts[2] else ""
-
-            val roots = safe(emptyList<AccessibilityNodeInfo>()) { svc.allRoots() }
-            var exactHit: JSONObject? = null
-            var fallbackHit: JSONObject? = null
-
-            val holder = arrayOfNulls<JSONObject>(2) // [0]=exact, [1]=fallback
-            roots.forEachIndexed { idx, root ->
-                if (holder[0] == null) {
-                    describeWalk(root, idx.toString(), key, wantClass, wantPath, id, holder)
-                }
-            }
-            exactHit = holder[0]
-            fallbackHit = holder[1]
-
-            val node = exactHit ?: fallbackHit ?: return staleResult()
-            return JSONObject().put("ok", true).put("node", node)
+            return JSONObject()
+                .put("ok", true)
+                .put("count", matches.length())
+                .put("generation", generation)
+                .put("matches", matches)
         }
     }
 
     /**
-     * Resolve a Set-of-Marks id to a LIVE node (for acting on it), by navigating the
-     * StableKey's treepath from the window root and sanity-checking the class. Returns
-     * null if the id is unknown or the tree has shifted (caller should re-read_screen).
+     * Full property dump for a previously labelled node. Re-locates the live
+     * node via its StableKey (exact match first, treepath+class fallback).
+     */
+    fun describeNode(id: Int): JSONObject {
+        val svc = BodyAccessibilityService.instance ?: return notRunning()
+        val key: String?
+        val gen: Int
+        synchronized(lock) {
+            key = idMap[id]
+            gen = generation
+        }
+        if (key == null) return staleError(gen)
+        val node = locateByKey(svc, key) ?: return staleError(gen)
+
+        val o = JSONObject()
+        o.put("id", id)
+        o.put("role", shortClassOf(node))
+        o.put("text", textOf(node) ?: "")
+        o.put("desc", descOf(node) ?: "")
+        o.put("viewId", ridOf(node) ?: "")
+        o.put("hint", hintOf(node) ?: "")
+        o.put("state", stateOf(node))
+        o.put("enabled", safe { node.isEnabled } ?: true)
+        o.put("selected", safe { node.isSelected } ?: false)
+        o.put("checked", safe { node.isChecked } ?: false)
+        o.put("bounds", boundsArrayOf(node))
+        o.put("childCount", safe { node.childCount } ?: 0)
+        val actions = JSONArray()
+        val actionList = safe { node.actionList } ?: emptyList()
+        for (a in actionList) {
+            val actionId = safe { a.id } ?: continue
+            actions.put(actionName(actionId))
+        }
+        o.put("actions", actions)
+
+        return JSONObject().put("ok", true).put("node", o)
+    }
+
+    /**
+     * Resolve a label back to a live AccessibilityNodeInfo by navigating the
+     * StableKey's treepath from the recorded root index. Returns null when the
+     * label is unknown or the tree changed underneath it.
      */
     fun resolveNode(id: Int): AccessibilityNodeInfo? {
         val svc = BodyAccessibilityService.instance ?: return null
-        synchronized(lock) {
-            val key = idMap[id] ?: return null
-            val parts = key.split("|", limit = 4)
-            val wantClass = if (parts.size > 1) parts[1] else ""
-            val treepath = if (parts.size > 2) parts[2] else return null
-            val idxs = treepath.split(".").mapNotNull { it.toIntOrNull() }
-            if (idxs.isEmpty()) return null
-            val roots = safe(emptyList<AccessibilityNodeInfo>()) { svc.allRoots() }
-            var node: AccessibilityNodeInfo = roots.getOrNull(idxs[0]) ?: return null
-            for (k in 1 until idxs.size) {
-                node = safe<AccessibilityNodeInfo?>(null) { node.getChild(idxs[k]) } ?: return null
-            }
-            if (wantClass.isNotEmpty() && shortClass(classNameOf(node)) != wantClass) return null
-            return node
+        val key = synchronized(lock) { idMap[id] } ?: return null
+        return navigateKey(svc, key)
+    }
+
+    /**
+     * Structural hash of the current pruned interesting set. Stable under
+     * re-labelling and scroll jitter (no ids, no bounds in the hash).
+     */
+    fun currentHash(): String {
+        val svc = BodyAccessibilityService.instance ?: return "0"
+        val roots = safe { svc.allRoots() } ?: return "0"
+        return hashRoots(roots, includeSystemUi = false)
+    }
+
+    /** Compare the current structural hash against a previous one. */
+    fun screenDiff(previousHash: String): JSONObject {
+        val svc = BodyAccessibilityService.instance ?: return notRunning()
+        val hash = currentHash()
+        val out = JSONObject().put("ok", true)
+        return if (hash == previousHash) {
+            out.put("changed", false).put("hash", hash)
+        } else {
+            out.put("changed", true)
+                .put("hash", hash)
+                .put("app", (safe { svc.foregroundPackage } as Any?) ?: JSONObject.NULL)
+                .put("added_labels", JSONArray())
+                .put("removed_labels", JSONArray())
         }
     }
 
-    /** Current structural screen hash (for before/after action verification). */
-    fun currentHash(): String {
-        val svc = BodyAccessibilityService.instance ?: return ""
-        synchronized(lock) { return computeScreenHash(svc) }
-    }
+    // ------------------------------------------------------------------
+    // Traversal
+    // ------------------------------------------------------------------
 
-    private fun staleResult(): JSONObject =
-        JSONObject()
-            .put("ok", false)
-            .put("error", "node_stale")
-            .put("hint", "re-read_screen; id map is generation $generation")
-
-    private fun describeWalk(
+    /**
+     * Interactive-mode DFS: traverses ALL children (so treepaths stay correct)
+     * but only emits interesting nodes. Pruned subtrees are not descended.
+     */
+    private fun collectFlat(
         node: AccessibilityNodeInfo?,
-        treepath: String,
-        wantKey: String,
-        wantClass: String,
-        wantPath: String,
-        id: Int,
-        holder: Array<JSONObject?>
+        path: String,
+        includeBounds: Boolean,
+        includeSystemUi: Boolean,
+        out: JSONArray,
+        budget: Budget
     ) {
-        if (node == null || holder[0] != null) return
-        if (!isVisibleUsable(node)) {
-            // still traverse children so treepath indices stay aligned
-        } else {
-            val thisKey = stableKey(node, treepath)
-            if (thisKey == wantKey) {
-                holder[0] = fullProps(node, id)
+        if (node == null || budget.truncated) return
+        if (isPruned(node, includeSystemUi)) return
+
+        if (isInteresting(node)) {
+            if (budget.emitted >= budget.max) {
+                budget.truncated = true
                 return
             }
-            if (holder[1] == null &&
-                treepath == wantPath &&
-                shortClass(classNameOf(node)) == wantClass
-            ) {
-                holder[1] = fullProps(node, id)
-            }
+            budget.emitted += 1
+            val label = idMap.size + 1
+            idMap[label] = stableKey(node, path)
+            out.put(compactNode(node, label, includeBounds))
         }
-        val cc = safe(0) { node.childCount }
-        for (i in 0 until cc) {
-            if (holder[0] != null) break
-            val child = safe<AccessibilityNodeInfo?>(null) { node.getChild(i) } ?: continue
-            describeWalk(child, "$treepath.$i", wantKey, wantClass, wantPath, id, holder)
-            safe(Unit) { child.recycle() }
+
+        val n = safe { node.childCount } ?: 0
+        for (i in 0 until n) {
+            if (budget.truncated) return
+            val child = safe { node.getChild(i) } ?: continue
+            collectFlat(child, "$path.$i", includeBounds, includeSystemUi, out, budget)
         }
     }
 
-    private fun fullProps(node: AccessibilityNodeInfo, id: Int): JSONObject {
-        val o = JSONObject()
-        o.put("id", id)
-        val role = shortClass(classNameOf(node)); if (role.isNotBlank()) o.put("role", role)
-        val text = textOf(node); if (text.isNotBlank()) o.put("text", text)
-        val desc = descOf(node); if (desc.isNotBlank()) o.put("desc", desc)
-        o.put("viewId", ridOf(node) ?: JSONObject.NULL)
-        o.put("hint", hintOf(node))
-        o.put("state", packState(node))
-        o.put("enabled", safe(true) { node.isEnabled })
-        o.put("selected", safe(false) { node.isSelected })
-        o.put("checked", safe(false) { node.isChecked })
-        val b = boundsOf(node)
-        o.put("bounds", JSONArray().put(b.left).put(b.top).put(b.right).put(b.bottom))
-        o.put("childCount", safe(0) { node.childCount })
+    /** Full-mode DFS: emits every non-pruned node, nested via "children". */
+    private fun buildFullNode(
+        node: AccessibilityNodeInfo?,
+        path: String,
+        includeBounds: Boolean,
+        includeSystemUi: Boolean,
+        budget: Budget
+    ): JSONObject? {
+        if (node == null || budget.truncated) return null
+        if (isPruned(node, includeSystemUi)) return null
+        if (budget.emitted >= budget.max) {
+            budget.truncated = true
+            return null
+        }
+        budget.emitted += 1
+        val label = idMap.size + 1
+        idMap[label] = stableKey(node, path)
+        val obj = compactNode(node, label, includeBounds)
 
-        val actions = JSONArray()
-        val list = safe(emptyList<AccessibilityNodeInfo.AccessibilityAction>()) { node.actionList }
-        list.forEach { actions.put(actionName(it)) }
-        o.put("actions", actions)
+        val children = JSONArray()
+        val n = safe { node.childCount } ?: 0
+        for (i in 0 until n) {
+            if (budget.truncated) break
+            val child = safe { node.getChild(i) } ?: continue
+            val c = buildFullNode(child, "$path.$i", includeBounds, includeSystemUi, budget)
+            if (c != null) children.put(c)
+        }
+        if (children.length() > 0) obj.put("children", children)
+        return obj
+    }
+
+    /** findNodes DFS: same pruning as interactive mode, selectors ANDed. */
+    private fun findWalk(
+        node: AccessibilityNodeInfo?,
+        path: String,
+        text: String?,
+        contentDesc: String?,
+        resourceId: String?,
+        className: String?,
+        clickableOnly: Boolean,
+        exact: Boolean,
+        out: JSONArray,
+        budget: Budget
+    ) {
+        if (node == null || budget.truncated) return
+        if (isPruned(node, includeSystemUi = false)) return
+
+        if (matchesSelectors(node, text, contentDesc, resourceId, className, clickableOnly, exact)) {
+            if (budget.emitted >= budget.max) {
+                budget.truncated = true
+                return
+            }
+            budget.emitted += 1
+            val label = idMap.size + 1
+            idMap[label] = stableKey(node, path)
+            out.put(compactNode(node, label, includeBounds = true))
+        }
+
+        val n = safe { node.childCount } ?: 0
+        for (i in 0 until n) {
+            if (budget.truncated) return
+            val child = safe { node.getChild(i) } ?: continue
+            findWalk(child, "$path.$i", text, contentDesc, resourceId, className, clickableOnly, exact, out, budget)
+        }
+    }
+
+    private fun matchesSelectors(
+        node: AccessibilityNodeInfo,
+        text: String?,
+        contentDesc: String?,
+        resourceId: String?,
+        className: String?,
+        clickableOnly: Boolean,
+        exact: Boolean
+    ): Boolean {
+        if (clickableOnly && safe { node.isClickable } != true) return false
+        if (text != null && !matchStr(textOf(node), text, exact)) return false
+        if (contentDesc != null && !matchStr(descOf(node), contentDesc, exact)) return false
+        if (resourceId != null) {
+            val rid = ridOf(node)
+            val short = rid?.substringAfterLast('/')
+            if (!matchStr(rid, resourceId, exact) && !matchStr(short, resourceId, exact)) return false
+        }
+        if (className != null) {
+            val full = safe { node.className?.toString() }
+            val short = shortClassOf(node)
+            if (!matchStr(full, className, exact) && !matchStr(short, className, exact)) return false
+        }
+        return true
+    }
+
+    private fun matchStr(value: String?, query: String, exact: Boolean): Boolean {
+        if (value == null) return false
+        return if (exact) value == query else value.contains(query, ignoreCase = true)
+    }
+
+    // ------------------------------------------------------------------
+    // Node re-resolution
+    // ------------------------------------------------------------------
+
+    /** Exact StableKey search across all roots, then treepath fallback. */
+    private fun locateByKey(svc: BodyAccessibilityService, key: String): AccessibilityNodeInfo? {
+        val roots = safe { svc.allRoots() } ?: emptyList()
+        for ((idx, root) in roots.withIndex()) {
+            val found = searchKey(root, idx.toString(), key)
+            if (found != null) return found
+        }
+        return navigateKey(svc, key)
+    }
+
+    private fun searchKey(node: AccessibilityNodeInfo?, path: String, key: String): AccessibilityNodeInfo? {
+        if (node == null) return null
+        if (stableKey(node, path) == key) return node
+        val n = safe { node.childCount } ?: 0
+        for (i in 0 until n) {
+            val child = safe { node.getChild(i) } ?: continue
+            val found = searchKey(child, "$path.$i", key)
+            if (found != null) return found
+        }
+        return null
+    }
+
+    /** Navigate the treepath recorded in a StableKey; verify shortClass. */
+    private fun navigateKey(svc: BodyAccessibilityService, key: String): AccessibilityNodeInfo? {
+        val parts = key.split("|")
+        if (parts.size < 4) return null
+        val shortClass = parts[1]
+        val idxs = parts[2].split(".").mapNotNull { it.toIntOrNull() }
+        if (idxs.isEmpty()) return null
+        val roots = safe { svc.allRoots() } ?: return null
+        var node: AccessibilityNodeInfo = roots.getOrNull(idxs[0]) ?: return null
+        for (i in 1 until idxs.size) {
+            node = safe { node.getChild(idxs[i]) } ?: return null
+        }
+        return if (shortClassOf(node) == shortClass) node else null
+    }
+
+    // ------------------------------------------------------------------
+    // Structural hash
+    // ------------------------------------------------------------------
+
+    private fun hashRoots(roots: List<AccessibilityNodeInfo>, includeSystemUi: Boolean): String {
+        var agg = 0
+        for (root in roots) {
+            agg = agg * 31 + hashTree(root, includeSystemUi)
+        }
+        return Integer.toHexString(agg)
+    }
+
+    /**
+     * Per-node contribution uses ONLY role|text|desc|rid|state|checked —
+     * no labels, no bounds — combined with child hashes in order, so the hash
+     * is stable under re-labeling and scroll jitter.
+     */
+    private fun hashTree(node: AccessibilityNodeInfo?, includeSystemUi: Boolean): Int {
+        if (node == null) return 0
+        if (isPruned(node, includeSystemUi)) return 0
+        var h = if (isInteresting(node)) structuralSig(node).hashCode() else 0
+        val n = safe { node.childCount } ?: 0
+        for (i in 0 until n) {
+            val child = safe { node.getChild(i) }
+            h = h * 31 + hashTree(child, includeSystemUi)
+        }
+        return h
+    }
+
+    private fun structuralSig(node: AccessibilityNodeInfo): String {
+        val checked = if (safe { node.isCheckable } == true) {
+            (safe { node.isChecked } == true).toString()
+        } else ""
+        return shortClassOf(node) + "|" +
+            (textOf(node) ?: "") + "|" +
+            (descOf(node) ?: "") + "|" +
+            (ridOf(node) ?: "") + "|" +
+            stateOf(node) + "|" +
+            checked
+    }
+
+    // ------------------------------------------------------------------
+    // Pruning & interest
+    // ------------------------------------------------------------------
+
+    private fun isPruned(node: AccessibilityNodeInfo, includeSystemUi: Boolean): Boolean {
+        if (!includeSystemUi && pkgOf(node) == SYSTEM_UI_PKG) return true
+        if (safe { node.isVisibleToUser } != true) return true
+        val r = boundsOf(node)
+        if (r.width() <= 0 || r.height() <= 0) return true
+        return false
+    }
+
+    private fun isInteresting(node: AccessibilityNodeInfo): Boolean {
+        if (safe { node.isClickable } == true) return true
+        if (safe { node.isEditable } == true) return true
+        if (safe { node.isCheckable } == true) return true
+        if (safe { node.isScrollable } == true) return true
+        if (!textOf(node).isNullOrBlank()) return true
+        if (!descOf(node).isNullOrBlank()) return true
+        return false
+    }
+
+    // ------------------------------------------------------------------
+    // JSON shaping
+    // ------------------------------------------------------------------
+
+    /** Compact node JSON: omits empty strings and absent/false flags. */
+    private fun compactNode(node: AccessibilityNodeInfo, label: Int, includeBounds: Boolean): JSONObject {
+        val o = JSONObject()
+        o.put("id", label)
+        val role = shortClassOf(node)
+        if (role.isNotEmpty()) o.put("role", role)
+        val text = textOf(node)
+        if (!text.isNullOrEmpty()) o.put("text", text)
+        val desc = descOf(node)
+        if (!desc.isNullOrEmpty()) o.put("desc", desc)
+        val rid = ridOf(node)
+        if (!rid.isNullOrEmpty()) o.put("rid", rid)
+        val hint = hintOf(node)
+        if (!hint.isNullOrEmpty()) o.put("hint", hint)
+        val state = stateOf(node)
+        if (state.isNotEmpty()) o.put("state", state)
+        if (safe { node.isCheckable } == true) {
+            o.put("checked", safe { node.isChecked } == true)
+        }
+        if (includeBounds) o.put("bounds", boundsArrayOf(node))
         return o
     }
 
-    private fun actionName(a: AccessibilityNodeInfo.AccessibilityAction): String = when (a.id) {
+    /**
+     * Packed state flags: c=clickable e=editable s=scrollable k=checkable
+     * f=focusable d=disabled x=selected p=longClickable.
+     */
+    private fun stateOf(node: AccessibilityNodeInfo): String {
+        val sb = StringBuilder()
+        if (safe { node.isClickable } == true) sb.append('c')
+        if (safe { node.isEditable } == true) sb.append('e')
+        if (safe { node.isScrollable } == true) sb.append('s')
+        if (safe { node.isCheckable } == true) sb.append('k')
+        if (safe { node.isFocusable } == true) sb.append('f')
+        if (safe { node.isEnabled } == false) sb.append('d')
+        if (safe { node.isSelected } == true) sb.append('x')
+        if (safe { node.isLongClickable } == true) sb.append('p')
+        return sb.toString()
+    }
+
+    private fun boundsArrayOf(node: AccessibilityNodeInfo): JSONArray {
+        val r = boundsOf(node)
+        return JSONArray().put(r.left).put(r.top).put(r.right).put(r.bottom)
+    }
+
+    // ------------------------------------------------------------------
+    // Guarded property reads (framework throws on stale nodes)
+    // ------------------------------------------------------------------
+
+    private fun pkgOf(node: AccessibilityNodeInfo): String =
+        safe { node.packageName?.toString() } ?: ""
+
+    private fun shortClassOf(node: AccessibilityNodeInfo): String =
+        (safe { node.className?.toString() } ?: "").substringAfterLast('.')
+
+    private fun textOf(node: AccessibilityNodeInfo): String? =
+        safe { node.text?.toString() }
+
+    private fun descOf(node: AccessibilityNodeInfo): String? =
+        safe { node.contentDescription?.toString() }
+
+    private fun ridOf(node: AccessibilityNodeInfo): String? =
+        safe { node.viewIdResourceName }
+
+    private fun hintOf(node: AccessibilityNodeInfo): String? =
+        safe { node.hintText?.toString() }
+
+    private fun boundsOf(node: AccessibilityNodeInfo): Rect {
+        val r = Rect()
+        try {
+            node.getBoundsInScreen(r)
+        } catch (_: Throwable) {
+            r.setEmpty()
+        }
+        return r
+    }
+
+    private fun stableKey(node: AccessibilityNodeInfo, path: String): String {
+        val r = boundsOf(node)
+        return pkgOf(node) + "|" + shortClassOf(node) + "|" + path + "|" +
+            r.left + "_" + r.top + "_" + r.right + "_" + r.bottom
+    }
+
+    private inline fun <T> safe(block: () -> T?): T? = try {
+        block()
+    } catch (_: Throwable) {
+        null
+    }
+
+    // ------------------------------------------------------------------
+    // Errors & misc
+    // ------------------------------------------------------------------
+
+    private fun notRunning(): JSONObject =
+        JSONObject().put("ok", false).put("error", "service_not_running")
+
+    private fun staleError(gen: Int): JSONObject =
+        JSONObject()
+            .put("ok", false)
+            .put("error", "node_stale")
+            .put("hint", "re-read_screen; id map is generation $gen")
+
+    private fun actionName(id: Int): String = when (id) {
         AccessibilityNodeInfo.ACTION_CLICK -> "click"
         AccessibilityNodeInfo.ACTION_LONG_CLICK -> "long_click"
-        AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> "scroll_forward"
-        AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> "scroll_backward"
         AccessibilityNodeInfo.ACTION_FOCUS -> "focus"
         AccessibilityNodeInfo.ACTION_CLEAR_FOCUS -> "clear_focus"
         AccessibilityNodeInfo.ACTION_SELECT -> "select"
         AccessibilityNodeInfo.ACTION_CLEAR_SELECTION -> "clear_selection"
-        AccessibilityNodeInfo.ACTION_SET_TEXT -> "set_text"
+        AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS -> "accessibility_focus"
+        AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS -> "clear_accessibility_focus"
+        AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> "scroll_forward"
+        AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> "scroll_backward"
+        AccessibilityNodeInfo.ACTION_COPY -> "copy"
+        AccessibilityNodeInfo.ACTION_PASTE -> "paste"
+        AccessibilityNodeInfo.ACTION_CUT -> "cut"
         AccessibilityNodeInfo.ACTION_SET_SELECTION -> "set_selection"
         AccessibilityNodeInfo.ACTION_EXPAND -> "expand"
         AccessibilityNodeInfo.ACTION_COLLAPSE -> "collapse"
-        AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS -> "a11y_focus"
-        AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS -> "clear_a11y_focus"
-        AccessibilityNodeInfo.ACTION_NEXT_HTML_ELEMENT -> "next_html_element"
-        AccessibilityNodeInfo.ACTION_PREVIOUS_HTML_ELEMENT -> "prev_html_element"
-        AccessibilityNodeInfo.ACTION_COPY -> "copy"
-        AccessibilityNodeInfo.ACTION_CUT -> "cut"
-        AccessibilityNodeInfo.ACTION_PASTE -> "paste"
         AccessibilityNodeInfo.ACTION_DISMISS -> "dismiss"
-        else -> a.label?.toString() ?: ("0x" + Integer.toHexString(a.id))
-    }
-
-    fun screenDiff(previousHash: String): JSONObject {
-        val svc = BodyAccessibilityService.instance
-            ?: return JSONObject().put("ok", false).put("error", "service_not_running")
-
-        synchronized(lock) {
-            val hash = computeScreenHash(svc)
-            if (hash == previousHash) {
-                return JSONObject().put("ok", true).put("changed", false).put("hash", hash)
-            }
-            // We don't cheaply retain the previous label set keyed by hash, so labels are
-            // reported empty while still signalling the structural change + new hash.
-            return JSONObject()
-                .put("ok", true)
-                .put("changed", true)
-                .put("hash", hash)
-                .put("app", svc.foregroundPackage ?: JSONObject.NULL)
-                .put("added_labels", JSONArray())
-                .put("removed_labels", JSONArray())
-        }
+        AccessibilityNodeInfo.ACTION_SET_TEXT -> "set_text"
+        AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id -> "show_on_screen"
+        AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id -> "scroll_up"
+        AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id -> "scroll_down"
+        AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id -> "scroll_left"
+        AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id -> "scroll_right"
+        AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id -> "ime_enter"
+        AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_TO_POSITION.id -> "scroll_to_position"
+        else -> "action_0x" + Integer.toHexString(id)
     }
 }
