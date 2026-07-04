@@ -34,6 +34,10 @@
             android:name=".setup.OnboardingActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".BridgeTokenActivity"
+            android:exported="false" />
+
         <service
             android:name=".service.BodyForegroundService"
             android:exported="false" />

@@ -46,6 +46,10 @@ class MainActivity : Activity() {
             text = "Set up permissions"
             setOnClickListener { startActivity(Intent(this@MainActivity, OnboardingActivity::class.java)) }
         })
+        root.addView(Button(this).apply {
+            text = "Bridge token"
+            setOnClickListener { startActivity(Intent(this@MainActivity, BridgeTokenActivity::class.java)) }
+        })
         setContentView(root)
     }
 
