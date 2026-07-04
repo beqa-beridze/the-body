@@ -9,6 +9,7 @@ import android.os.SystemClock
 import com.beqa.body.BuildConfig
 import com.beqa.body.a11y.BodyAccessibilityService
 import com.beqa.body.action.BodyActionExecutor
+import com.beqa.body.action.ExternalActions
 import com.beqa.body.notify.BodyNotificationListener
 import com.beqa.body.notify.NotificationReader
 import com.beqa.body.screen.BodyScreenReader
@@ -109,6 +110,11 @@ class BridgeHttpServer(
                 ))
                 "/press_key" -> reply(200, BodyActionExecutor.pressKey(qStr(session, "key", "")))
                 "/notifications" -> reply(200, NotificationReader.list(qInt(session, "limit", 50)))
+                "/sms/send", "/notifications/reply", "/notifications/action" -> {
+                    val payload = payloadOf(session)
+                    val confirm = payload.optString("confirm").ifBlank { null }
+                    reply(200, ExternalActions.route(path, payload, confirm, appContext))
+                }
                 "/wait_for" -> reply(200, BodyActionExecutor.waitFor(
                     text = qStrOrNull(session, "text"),
                     resourceId = qStrOrNull(session, "rid"),
@@ -128,7 +134,7 @@ class BridgeHttpServer(
             .put("ok", true)
             .put("app", "body")
             .put("version", BuildConfig.VERSION_NAME)
-            .put("milestone", "M5")
+            .put("milestone", "M6")
             .put(
                 "capabilities",
                 JSONObject()
@@ -176,6 +182,24 @@ class BridgeHttpServer(
     private fun qInt(s: IHTTPSession, k: String, d: Int): Int = qStrOrNull(s, k)?.toIntOrNull() ?: d
 
     private fun qIntOrNull(s: IHTTPSession, k: String): Int? = qStrOrNull(s, k)?.toIntOrNull()
+
+    /** Merge query params + JSON POST body into one JSONObject (for external-effect routes). */
+    private fun payloadOf(s: IHTTPSession): JSONObject {
+        val o = JSONObject()
+        try {
+            if (s.method == Method.POST || s.method == Method.PUT) {
+                val map = HashMap<String, String>()
+                s.parseBody(map)
+                val raw = map["postData"] ?: s.parameters.keys.firstOrNull { it.trimStart().startsWith("{") }
+                if (!raw.isNullOrBlank()) {
+                    val body = JSONObject(raw)
+                    body.keys().forEach { k -> o.put(k, body.get(k)) }
+                }
+            }
+        } catch (e: Exception) { /* fall back to query params */ }
+        s.parameters.forEach { (k, v) -> if (!o.has(k) && v.isNotEmpty()) o.put(k, v[0]) }
+        return o
+    }
 
     private fun qBool(s: IHTTPSession, k: String, d: Boolean): Boolean =
         qStrOrNull(s, k)?.let { it == "1" || it.equals("true", true) } ?: d
