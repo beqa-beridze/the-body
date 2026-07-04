@@ -8,13 +8,20 @@ import android.app.Service
 import android.content.ComponentName
 import android.content.Intent
 import android.os.IBinder
+import android.util.Log
+import com.beqa.body.security.BridgeTokenStore
+import com.beqa.body.server.AuthRateLimiter
+import com.beqa.body.server.BridgeHttpServer
 
 class BodyForegroundService : Service() {
+
+    private var server: BridgeHttpServer? = null
 
     companion object {
         const val CHANNEL = "body_service"
         const val NOTIF_ID = 1001
         const val ACTION_STOP = "com.beqa.body.action.STOP"
+        const val TAG = "BodyBridge"
 
         @Volatile
         var isRunning = false
@@ -35,14 +42,29 @@ class BodyForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            stopBridge()
             isRunning = false
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
         startForeground(NOTIF_ID, buildNotification())
+        if (server == null) {
+            try {
+                val tokens = BridgeTokenStore(this).also { it.getOrCreate() }
+                server = BridgeHttpServer(tokens, AuthRateLimiter(), this).also { it.start() }
+                Log.i(TAG, "bridge listening on ${BridgeHttpServer.BIND_ADDR}:${BridgeHttpServer.PORT}")
+            } catch (e: Exception) {
+                Log.e(TAG, "failed to start bridge", e)
+            }
+        }
         isRunning = true
         return START_STICKY
+    }
+
+    private fun stopBridge() {
+        try { server?.stop() } catch (_: Exception) {}
+        server = null
     }
 
     private fun buildNotification(): Notification {
@@ -79,6 +101,7 @@ class BodyForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        stopBridge()
         isRunning = false
         super.onDestroy()
     }
