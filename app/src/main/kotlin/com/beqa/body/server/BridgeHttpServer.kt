@@ -9,6 +9,7 @@ import android.os.SystemClock
 import com.beqa.body.BuildConfig
 import com.beqa.body.a11y.BodyAccessibilityService
 import com.beqa.body.notify.BodyNotificationListener
+import com.beqa.body.screen.BodyScreenReader
 import com.beqa.body.security.BridgeTokenStore
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONObject
@@ -60,6 +61,23 @@ class BridgeHttpServer(
 
             when (path) {
                 "/state" -> reply(200, state())
+                "/read_screen" -> reply(200, BodyScreenReader.readScreen(
+                    mode = qStr(session, "mode", "interactive"),
+                    includeBounds = qBool(session, "bounds", false),
+                    includeSystemUi = qBool(session, "system_ui", false),
+                    maxNodes = qInt(session, "max", 500)
+                ))
+                "/find_nodes" -> reply(200, BodyScreenReader.findNodes(
+                    text = qStrOrNull(session, "text"),
+                    contentDesc = qStrOrNull(session, "desc"),
+                    resourceId = qStrOrNull(session, "rid"),
+                    className = qStrOrNull(session, "class"),
+                    clickableOnly = qBool(session, "clickable", false),
+                    exact = qBool(session, "exact", false),
+                    limit = qInt(session, "limit", 20)
+                ))
+                "/describe_node" -> reply(200, BodyScreenReader.describeNode(qInt(session, "id", -1)))
+                "/screen_diff" -> reply(200, BodyScreenReader.screenDiff(qStr(session, "hash", "")))
                 else -> reply(404, error("not_found"))
             }
         } catch (e: Exception) {
@@ -72,7 +90,7 @@ class BridgeHttpServer(
             .put("ok", true)
             .put("app", "body")
             .put("version", BuildConfig.VERSION_NAME)
-            .put("milestone", "M2")
+            .put("milestone", "M3")
             .put(
                 "capabilities",
                 JSONObject()
@@ -111,6 +129,16 @@ class BridgeHttpServer(
             .put("accessibility", BodyAccessibilityService.isConnected())
             .put("notifications", BodyNotificationListener.isConnected())
     }
+
+    private fun qStrOrNull(s: IHTTPSession, k: String): String? =
+        s.parameters[k]?.firstOrNull()?.takeIf { it.isNotEmpty() }
+
+    private fun qStr(s: IHTTPSession, k: String, d: String): String = qStrOrNull(s, k) ?: d
+
+    private fun qInt(s: IHTTPSession, k: String, d: Int): Int = qStrOrNull(s, k)?.toIntOrNull() ?: d
+
+    private fun qBool(s: IHTTPSession, k: String, d: Boolean): Boolean =
+        qStrOrNull(s, k)?.let { it == "1" || it.equals("true", true) } ?: d
 
     private fun error(code: String): JSONObject {
         return JSONObject().put("ok", false).put("error", code)
