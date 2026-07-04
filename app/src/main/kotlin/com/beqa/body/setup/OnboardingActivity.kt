@@ -179,6 +179,20 @@ class OnboardingActivity : Activity() {
             })
         }
 
+        if (!item.done && item.ackable) {
+            row.addView(Button(this).apply {
+                text = "Mark done"
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(2); gravity = Gravity.END }
+                setOnClickListener {
+                    SetupStatus.acknowledge(this@OnboardingActivity, item.key)
+                    render()
+                }
+            })
+        }
+
         return row
     }
 }

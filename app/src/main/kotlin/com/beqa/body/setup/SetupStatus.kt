@@ -22,8 +22,24 @@ object SetupStatus {
         val detail: String,
         val done: Boolean,          // true if already satisfied (null/unknown -> false)
         val actionLabel: String,    // e.g. "Open settings"
-        val fixIntent: Intent?      // startActivity target to resolve it, or null if purely informational
+        val fixIntent: Intent?,     // startActivity target to resolve it, or null if purely informational
+        val ackable: Boolean = false // true if not OS-queryable and user may manually mark it done
     )
+
+    private const val PREFS = "body_setup"
+
+    private fun isAcked(ctx: Context, key: String): Boolean =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("ack_$key", false)
+
+    fun acknowledge(ctx: Context, key: String) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean("ack_$key", true).commit()
+    }
+
+    fun unacknowledge(ctx: Context, key: String) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean("ack_$key", false).commit()
+    }
 
     private const val A11Y_PKG = "com.beqa.body"
     private const val A11Y_CLS = "com.beqa.body.a11y.BodyAccessibilityService"
@@ -39,18 +55,20 @@ object SetupStatus {
                 title = "Allow restricted settings",
                 detail = "Samsung/Android blocks sideloaded apps from some toggles — " +
                         "in the app's App info screen, tap the ⋮ menu → Allow restricted settings.",
-                done = false, // not programmatically queryable — always show as a guidance step
+                done = isAcked(ctx, "restricted"), // not programmatically queryable — user marks it done
                 actionLabel = "Open app info",
-                fixIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(pkgUri)
+                fixIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(pkgUri),
+                ackable = true
             ),
             Item(
                 key = "autoblocker",
                 title = "Turn off Auto Blocker",
                 detail = "Samsung Auto Blocker blocks sideloading and some permissions. " +
                         "Settings → Security and privacy → Auto Blocker → off.",
-                done = false, // informational
+                done = isAcked(ctx, "autoblocker"), // informational — user marks it done
                 actionLabel = "Open security settings",
-                fixIntent = securitySettingsIntent(ctx)
+                fixIntent = securitySettingsIntent(ctx),
+                ackable = true
             ),
             Item(
                 key = "battery",
