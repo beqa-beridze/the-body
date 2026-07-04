@@ -10,6 +10,7 @@ import com.beqa.body.BuildConfig
 import com.beqa.body.a11y.BodyAccessibilityService
 import com.beqa.body.action.BodyActionExecutor
 import com.beqa.body.notify.BodyNotificationListener
+import com.beqa.body.notify.NotificationReader
 import com.beqa.body.screen.BodyScreenReader
 import com.beqa.body.security.BridgeTokenStore
 import fi.iki.elonen.NanoHTTPD
@@ -107,6 +108,7 @@ class BridgeHttpServer(
                     distance = qStr(session, "distance", "medium")
                 ))
                 "/press_key" -> reply(200, BodyActionExecutor.pressKey(qStr(session, "key", "")))
+                "/notifications" -> reply(200, NotificationReader.list(qInt(session, "limit", 50)))
                 "/wait_for" -> reply(200, BodyActionExecutor.waitFor(
                     text = qStrOrNull(session, "text"),
                     resourceId = qStrOrNull(session, "rid"),
@@ -126,7 +128,7 @@ class BridgeHttpServer(
             .put("ok", true)
             .put("app", "body")
             .put("version", BuildConfig.VERSION_NAME)
-            .put("milestone", "M4")
+            .put("milestone", "M5")
             .put(
                 "capabilities",
                 JSONObject()
