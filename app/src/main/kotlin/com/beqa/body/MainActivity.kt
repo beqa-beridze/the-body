@@ -6,16 +6,20 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
+import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.beqa.body.service.BodyForegroundService
+import com.beqa.body.setup.OnboardingActivity
+import com.beqa.body.setup.SetupStatus
 
 /**
- * Minimal landing screen: ensures the foreground service is running and shows status.
- * (Grows in later increments; for now it exists so the service has a launcher + a way
- * to be (re)started, and so POST_NOTIFICATIONS is requested on API 33+.)
+ * Landing screen: ensures the foreground service is running, shows setup progress, and
+ * links to the onboarding checklist.
  */
 class MainActivity : Activity() {
+
+    private lateinit var status: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -35,15 +39,20 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             setPadding(64, 128, 64, 64)
         }
-        root.addView(TextView(this).apply {
-            text = "Body"
-            textSize = 34f
-        })
-        root.addView(TextView(this).apply {
-            text = "foreground service running · local only\ncom.beqa.body · v${BuildConfig.VERSION_NAME}"
-            textSize = 15f
-            setPadding(0, 32, 0, 0)
+        root.addView(TextView(this).apply { text = "Body"; textSize = 34f })
+        status = TextView(this).apply { textSize = 15f; setPadding(0, 24, 0, 24); gravity = Gravity.CENTER }
+        root.addView(status)
+        root.addView(Button(this).apply {
+            text = "Set up permissions"
+            setOnClickListener { startActivity(Intent(this@MainActivity, OnboardingActivity::class.java)) }
         })
         setContentView(root)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val items = SetupStatus.items(this)
+        val done = items.count { it.done }
+        status.text = "foreground service · local only\nsetup: $done of ${items.size} complete\ncom.beqa.body · v${BuildConfig.VERSION_NAME}"
     }
 }
