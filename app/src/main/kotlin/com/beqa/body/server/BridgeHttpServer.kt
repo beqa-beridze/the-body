@@ -16,6 +16,7 @@ import com.beqa.body.notify.NotificationReader
 import com.beqa.body.screen.BodyScreenReader
 import com.beqa.body.security.BridgeTokenStore
 import fi.iki.elonen.NanoHTTPD
+import org.json.JSONArray
 import org.json.JSONObject
 
 class BridgeHttpServer(
@@ -65,11 +66,13 @@ class BridgeHttpServer(
 
             when (path) {
                 "/state" -> reply(200, state())
+                "/displays" -> reply(200, displays())
                 "/read_screen" -> reply(200, BodyScreenReader.readScreen(
                     mode = qStr(session, "mode", "interactive"),
                     includeBounds = qBool(session, "bounds", false),
                     includeSystemUi = qBool(session, "system_ui", false),
-                    maxNodes = qInt(session, "max", 500)
+                    maxNodes = qInt(session, "max", 500),
+                    displayId = qIntOrNull(session, "display")
                 ))
                 "/find_nodes" -> reply(200, BodyScreenReader.findNodes(
                     text = qStrOrNull(session, "text"),
@@ -78,7 +81,8 @@ class BridgeHttpServer(
                     className = qStrOrNull(session, "class"),
                     clickableOnly = qBool(session, "clickable", false),
                     exact = qBool(session, "exact", false),
-                    limit = qInt(session, "limit", 20)
+                    limit = qInt(session, "limit", 20),
+                    displayId = qIntOrNull(session, "display")
                 ))
                 "/describe_node" -> reply(200, BodyScreenReader.describeNode(qStr(session, "id", "")))
                 "/screen_diff" -> reply(200, BodyScreenReader.screenDiff(qStr(session, "hash", "")))
@@ -138,6 +142,24 @@ class BridgeHttpServer(
         } catch (e: Exception) {
             reply(500, error("server_error"))
         }
+    }
+
+    /** DIAGNOSTIC: window packages per display (via getWindowsOnAllDisplays). */
+    private fun displays(): JSONObject {
+        val svc = BodyAccessibilityService.instance
+            ?: return JSONObject().put("ok", false).put("error", "service_not_running")
+        val arr = JSONArray()
+        for ((displayId, count, pkgs) in svc.displaySummary()) {
+            val pkgArr = JSONArray()
+            for (p in pkgs) pkgArr.put(p ?: JSONObject.NULL)
+            arr.put(
+                JSONObject()
+                    .put("display", displayId)
+                    .put("windows", count)
+                    .put("packages", pkgArr)
+            )
+        }
+        return JSONObject().put("ok", true).put("displays", arr)
     }
 
     private fun health(): JSONObject {

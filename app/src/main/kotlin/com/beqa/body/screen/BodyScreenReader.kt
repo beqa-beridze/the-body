@@ -29,6 +29,13 @@ object BodyScreenReader {
     /** Bumped every time the label map is rebuilt (readScreen / findNodes). */
     private var generation: Int = 0
 
+    /**
+     * The display the CURRENT id map was built from (null = default-display `windows`).
+     * Action resolution (locateByKey/navigateKey) must search the SAME display's roots the
+     * ids were labelled against, or a hidden-display id would fail to resolve / mis-target.
+     */
+    private var lastDisplayId: Int? = null
+
     /** Set-of-Marks state: integer label -> StableKey. */
     private val idMap: MutableMap<Int, String> = HashMap()
 
@@ -37,6 +44,11 @@ object BodyScreenReader {
         var emitted = 0
         var truncated = false
     }
+
+    /** Roots for a read/resolve basis: a specific display, else default-display windows. */
+    private fun rootsFor(svc: BodyAccessibilityService, displayId: Int?): List<AccessibilityNodeInfo> =
+        if (displayId != null) svc.rootsForDisplay(displayId)
+        else (safe { svc.allRoots() } ?: emptyList())
 
     // ------------------------------------------------------------------
     // Public API
@@ -50,14 +62,16 @@ object BodyScreenReader {
         mode: String = "interactive",
         includeBounds: Boolean = false,
         includeSystemUi: Boolean = false,
-        maxNodes: Int = 500
+        maxNodes: Int = 500,
+        displayId: Int? = null
     ): JSONObject {
         val svc = BodyAccessibilityService.instance ?: return notRunning()
         val cap = maxNodes.coerceIn(1, 2000)
         synchronized(lock) {
             generation += 1
+            lastDisplayId = displayId
             idMap.clear()
-            val roots = safe { svc.allRoots() } ?: emptyList()
+            val roots = rootsFor(svc, displayId)
             val budget = Budget(cap)
             val out = JSONObject()
             out.put("ok", true)
@@ -101,14 +115,16 @@ object BodyScreenReader {
         className: String? = null,
         clickableOnly: Boolean = false,
         exact: Boolean = false,
-        limit: Int = 20
+        limit: Int = 20,
+        displayId: Int? = null
     ): JSONObject {
         val svc = BodyAccessibilityService.instance ?: return notRunning()
         val cap = limit.coerceIn(1, 2000)
         synchronized(lock) {
             generation += 1
+            lastDisplayId = displayId
             idMap.clear()
-            val roots = safe { svc.allRoots() } ?: emptyList()
+            val roots = rootsFor(svc, displayId)
             val budget = Budget(cap)
             val matches = JSONArray()
             for ((idx, root) in roots.withIndex()) {
@@ -379,7 +395,7 @@ object BodyScreenReader {
 
     /** Exact StableKey search across all roots, then treepath fallback. */
     private fun locateByKey(svc: BodyAccessibilityService, key: String): AccessibilityNodeInfo? {
-        val roots = safe { svc.allRoots() } ?: emptyList()
+        val roots = rootsFor(svc, lastDisplayId)
         for ((idx, root) in roots.withIndex()) {
             val found = searchKey(root, idx.toString(), key)
             if (found != null) return found
@@ -406,7 +422,8 @@ object BodyScreenReader {
         val shortClass = parts[1]
         val idxs = parts[2].split(".").mapNotNull { it.toIntOrNull() }
         if (idxs.isEmpty()) return null
-        val roots = safe { svc.allRoots() } ?: return null
+        val roots = rootsFor(svc, lastDisplayId)
+        if (roots.isEmpty()) return null
         var node: AccessibilityNodeInfo = roots.getOrNull(idxs[0]) ?: return null
         for (i in 1 until idxs.size) {
             node = safe { node.getChild(idxs[i]) } ?: return null
