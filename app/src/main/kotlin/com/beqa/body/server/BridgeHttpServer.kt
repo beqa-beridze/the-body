@@ -80,29 +80,29 @@ class BridgeHttpServer(
                     exact = qBool(session, "exact", false),
                     limit = qInt(session, "limit", 20)
                 ))
-                "/describe_node" -> reply(200, BodyScreenReader.describeNode(qInt(session, "id", -1)))
+                "/describe_node" -> reply(200, BodyScreenReader.describeNode(qStr(session, "id", "")))
                 "/screen_diff" -> reply(200, BodyScreenReader.screenDiff(qStr(session, "hash", "")))
                 "/tap" -> reply(200, BodyActionExecutor.tap(
-                    id = qIntOrNull(session, "id"),
+                    id = qStrOrNull(session, "id"),
                     x = qIntOrNull(session, "x"),
                     y = qIntOrNull(session, "y"),
                     fallbackText = qStrOrNull(session, "text")
                 ))
                 "/long_press" -> reply(200, BodyActionExecutor.longPress(
-                    id = qIntOrNull(session, "id"),
+                    id = qStrOrNull(session, "id"),
                     x = qIntOrNull(session, "x"),
                     y = qIntOrNull(session, "y"),
                     durationMs = qInt(session, "duration", 600)
                 ))
                 "/type_text" -> reply(200, BodyActionExecutor.typeText(
                     text = qStr(session, "text", ""),
-                    id = qIntOrNull(session, "id"),
+                    id = qStrOrNull(session, "id"),
                     clearFirst = qBool(session, "clear", true),
                     submit = qBool(session, "submit", false)
                 ))
                 "/scroll" -> reply(200, BodyActionExecutor.scroll(
                     direction = qStr(session, "direction", "down"),
-                    id = qIntOrNull(session, "id"),
+                    id = qStrOrNull(session, "id"),
                     distance = qStr(session, "distance", "medium")
                 ))
                 "/swipe" -> reply(200, BodyActionExecutor.swipe(

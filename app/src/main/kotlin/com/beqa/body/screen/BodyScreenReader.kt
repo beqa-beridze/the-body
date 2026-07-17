@@ -10,7 +10,9 @@ import org.json.JSONObject
  * BodyScreenReader — converts the live accessibility tree into compact JSON
  * using the Set-of-Marks technique: every emitted element gets a small integer
  * label, and the label -> StableKey map lets callers re-resolve the live node
- * later (resolveNode / describeNode) without brittle paths.
+ * later (resolveChecked / describeNode) without brittle paths. Labels are
+ * generation-qualified ("G-N") so a re-read by ANY client invalidates older
+ * ids loudly (stale_generation) instead of silently retargeting them.
  *
  * StableKey format: "pkg|shortClass|treepath|l_t_r_b"
  *   - treepath is the child-index path from the root's index in allRoots(),
@@ -127,20 +129,26 @@ object BodyScreenReader {
     /**
      * Full property dump for a previously labelled node. Re-locates the live
      * node via its StableKey (exact match first, treepath+class fallback).
+     * Accepts qualified ids ("G-N") and enforces their generation.
      */
-    fun describeNode(id: Int): JSONObject {
+    fun describeNode(rawId: String): JSONObject {
         val svc = BodyAccessibilityService.instance ?: return notRunning()
+        val parsed = parseRawId(rawId) ?: return staleError(0, "bad_id")
+        val (expectedGen, label) = parsed
         val key: String?
         val gen: Int
         synchronized(lock) {
-            key = idMap[id]
             gen = generation
+            if (expectedGen != null && expectedGen != generation) {
+                return staleError(gen, "stale_generation")
+            }
+            key = idMap[label]
         }
         if (key == null) return staleError(gen)
         val node = locateByKey(svc, key) ?: return staleError(gen)
 
         val o = JSONObject()
-        o.put("id", id)
+        o.put("id", rawId)
         o.put("role", shortClassOf(node))
         o.put("text", textOf(node) ?: "")
         o.put("desc", descOf(node) ?: "")
@@ -164,14 +172,45 @@ object BodyScreenReader {
     }
 
     /**
-     * Resolve a label back to a live AccessibilityNodeInfo by navigating the
-     * StableKey's treepath from the recorded root index. Returns null when the
-     * label is unknown or the tree changed underneath it.
+     * Generation-checked resolve for a raw client id ("G-N" qualified, or bare
+     * "N" for back-compat with older clients — bare ids skip the generation
+     * check and keep only the weaker treepath+class validation).
+     *
+     * Returns (node, null) on success, or (null, errorCode):
+     *   "stale_generation" — another client rebuilt the map since this id was
+     *     issued; acting on it could hit the WRONG element. Re-read the screen.
+     *   "node_stale"       — id unknown in the current map / tree changed.
+     *   "bad_id"           — unparseable id.
+     * The generation comparison happens under the same lock that rebuilds the
+     * map, so a concurrent read_screen cannot slip between check and lookup.
      */
-    fun resolveNode(id: Int): AccessibilityNodeInfo? {
-        val svc = BodyAccessibilityService.instance ?: return null
-        val key = synchronized(lock) { idMap[id] } ?: return null
-        return navigateKey(svc, key)
+    fun resolveChecked(rawId: String): Pair<AccessibilityNodeInfo?, String?> {
+        val svc = BodyAccessibilityService.instance ?: return null to "service_not_running"
+        val parsed = parseRawId(rawId) ?: return null to "bad_id"
+        val (expectedGen, label) = parsed
+        val key: String?
+        synchronized(lock) {
+            if (expectedGen != null && expectedGen != generation) {
+                return null to "stale_generation"
+            }
+            key = idMap[label]
+        }
+        if (key == null) return null to "node_stale"
+        val node = navigateKey(svc, key) ?: return null to "node_stale"
+        return node to null
+    }
+
+    /** "G-N" → (G, N); bare "N" → (null, N); anything else → null. */
+    private fun parseRawId(raw: String): Pair<Int?, Int>? {
+        val dash = raw.indexOf('-')
+        return if (dash > 0) {
+            val gen = raw.substring(0, dash).toIntOrNull() ?: return null
+            val label = raw.substring(dash + 1).toIntOrNull() ?: return null
+            gen to label
+        } else {
+            val label = raw.toIntOrNull() ?: return null
+            null to label
+        }
     }
 
     /**
@@ -442,10 +481,14 @@ object BodyScreenReader {
     // JSON shaping
     // ------------------------------------------------------------------
 
-    /** Compact node JSON: omits empty strings and absent/false flags. */
+    /**
+     * Compact node JSON: omits empty strings and absent/false flags.
+     * The id is generation-qualified ("G-N") so actions echoing it back get
+     * stale-generation protection automatically. Callers hold [lock].
+     */
     private fun compactNode(node: AccessibilityNodeInfo, label: Int, includeBounds: Boolean): JSONObject {
         val o = JSONObject()
-        o.put("id", label)
+        o.put("id", "$generation-$label")
         val role = shortClassOf(node)
         if (role.isNotEmpty()) o.put("role", role)
         val text = textOf(node)
@@ -538,10 +581,10 @@ object BodyScreenReader {
     private fun notRunning(): JSONObject =
         JSONObject().put("ok", false).put("error", "service_not_running")
 
-    private fun staleError(gen: Int): JSONObject =
+    private fun staleError(gen: Int, code: String = "node_stale"): JSONObject =
         JSONObject()
             .put("ok", false)
-            .put("error", "node_stale")
+            .put("error", code)
             .put("hint", "re-read_screen; id map is generation $gen")
 
     private fun actionName(id: Int): String = when (id) {

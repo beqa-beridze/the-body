@@ -284,10 +284,10 @@ object BodyActionExecutor {
             null
         }
         if (matches == null || matches.length() == 0) return null
-        val mid = matches.optJSONObject(0)?.optInt("id", -1) ?: -1
-        if (mid < 0) return null
+        val mid = matches.optJSONObject(0)?.optString("id", "") ?: ""
+        if (mid.isEmpty()) return null
         return try {
-            BodyScreenReader.resolveNode(mid)
+            BodyScreenReader.resolveChecked(mid).first
         } catch (_: Exception) {
             null
         }
@@ -296,14 +296,14 @@ object BodyActionExecutor {
     // ---------------------------------------------------------------- tap / longPress
 
     fun tap(
-        id: Int? = null,
+        id: String? = null,
         x: Int? = null,
         y: Int? = null,
         fallbackText: String? = null
     ): JSONObject = clickLike("tap", id, x, y, fallbackText, longPress = false, pressDurationMs = 50L)
 
     fun longPress(
-        id: Int? = null,
+        id: String? = null,
         x: Int? = null,
         y: Int? = null,
         durationMs: Int = 600
@@ -315,7 +315,7 @@ object BodyActionExecutor {
 
     private fun clickLike(
         actionName: String,
-        id: Int?,
+        id: String?,
         x: Int?,
         y: Int?,
         fallbackText: String?,
@@ -324,7 +324,7 @@ object BodyActionExecutor {
     ): JSONObject {
         return try {
             val svc = service() ?: return fail(actionName, "service_not_running")
-            val targetKey = id?.toString()
+            val targetKey = id
                 ?: if (x != null && y != null) "$x,$y" else (fallbackText ?: "")
             val hashBefore = safeHash()
 
@@ -334,11 +334,13 @@ object BodyActionExecutor {
 
             when {
                 id != null -> {
-                    node = try {
-                        BodyScreenReader.resolveNode(id)
+                    val resolved = try {
+                        BodyScreenReader.resolveChecked(id)
                     } catch (_: Exception) {
-                        null
-                    } ?: return fail(actionName, "node_stale", "re-read_screen")
+                        null to "node_stale"
+                    }
+                    node = resolved.first
+                        ?: return fail(actionName, resolved.second ?: "node_stale", "re-read_screen")
                 }
                 x != null && y != null -> {
                     gestureX = x.toFloat()
@@ -437,7 +439,7 @@ object BodyActionExecutor {
 
     fun typeText(
         text: String,
-        id: Int? = null,
+        id: String? = null,
         clearFirst: Boolean = true,
         submit: Boolean = false
     ): JSONObject {
@@ -446,11 +448,13 @@ object BodyActionExecutor {
             val hashBefore = safeHash()
 
             val node: AccessibilityNodeInfo = if (id != null) {
-                try {
-                    BodyScreenReader.resolveNode(id)
+                val resolved = try {
+                    BodyScreenReader.resolveChecked(id)
                 } catch (_: Exception) {
-                    null
-                } ?: return fail("type_text", "node_stale", "re-read_screen")
+                    null to "node_stale"
+                }
+                resolved.first
+                    ?: return fail("type_text", resolved.second ?: "node_stale", "re-read_screen")
             } else {
                 try {
                     svc.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
@@ -523,7 +527,7 @@ object BodyActionExecutor {
 
     // ---------------------------------------------------------------- scroll
 
-    fun scroll(direction: String, id: Int? = null, distance: String = "medium"): JSONObject {
+    fun scroll(direction: String, id: String? = null, distance: String = "medium"): JSONObject {
         return try {
             val svc = service() ?: return fail("scroll", "service_not_running")
             val dir = direction.lowercase()
@@ -531,17 +535,19 @@ object BodyActionExecutor {
                 return fail("scroll", "unknown_direction", "use up/down/left/right")
             }
             val hashBefore = safeHash()
-            val targetKey = id?.toString() ?: dir
+            val targetKey = id ?: dir
 
             var baseNode: AccessibilityNodeInfo? = null
             var method: String? = null
 
             if (id != null) {
-                baseNode = try {
-                    BodyScreenReader.resolveNode(id)
+                val resolved = try {
+                    BodyScreenReader.resolveChecked(id)
                 } catch (_: Exception) {
-                    null
-                } ?: return fail("scroll", "node_stale", "re-read_screen")
+                    null to "node_stale"
+                }
+                baseNode = resolved.first
+                    ?: return fail("scroll", resolved.second ?: "node_stale", "re-read_screen")
 
                 // down/right => SCROLL_FORWARD, up/left => SCROLL_BACKWARD
                 val wanted =
