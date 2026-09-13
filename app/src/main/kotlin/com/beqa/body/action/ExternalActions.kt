@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.service.notification.StatusBarNotification
 import android.telephony.SmsManager
 import com.beqa.body.notify.BodyNotificationListener
+import org.json.JSONArray
 import org.json.JSONObject
 
 object ExternalActions {
@@ -20,7 +21,11 @@ object ExternalActions {
         "com.samsung.android.messaging",
         "org.thoughtcrime.securesms",
         "com.facebook.orca",
-        "com.instagram.android"
+        "com.instagram.android",
+        // Our own loopback self-check notification. Replying to it reaches a
+        // BroadcastReceiver inside this same app and no human being — it exists so the
+        // reply path can be PROVEN without messaging anyone.
+        "com.beqa.body"
     )
 
     fun route(
@@ -33,6 +38,8 @@ object ExternalActions {
             "/sms/send" -> smsSend(payload, confirm, context)
             "/notifications/reply" -> notifReply(payload, confirm, context)
             "/notifications/action" -> notifAction(payload, confirm, context)
+            "/notifications/dismiss" -> notifDismiss(payload)
+            "/notifications/snooze" -> notifSnooze(payload)
             else -> err("not_found")
         }
     }
@@ -70,9 +77,21 @@ object ExternalActions {
         }
     }
 
+    /**
+     * Reply into a notification's RemoteInput.
+     *
+     * M8d change: optional `action_index` (the `index` field GET /notifications now returns).
+     * Without it this fell back to "first action carrying any RemoteInput" and then stuffed
+     * the same text into EVERY result key on that action — silently wrong for any app that
+     * ships two reply actions, or one action with two distinct inputs. The index is folded
+     * into the confirmation canonical string, so a token minted for index 0 cannot be
+     * replayed against index 1.
+     */
     private fun notifReply(payload: JSONObject, confirm: String?, context: Context): JSONObject {
         val key = payload.optString("key")
         val text = payload.optString("text")
+        val actionIndex = if (payload.has("action_index")) payload.optInt("action_index", -1) else -1
+        val resultKey = payload.optString("result_key").ifBlank { null }
 
         val instance = BodyNotificationListener.instance
             ?: return err("listener_not_connected")
@@ -86,28 +105,68 @@ object ExternalActions {
                 .put("pkg", sbn.packageName)
         }
 
-        val action = sbn.notification.actions?.firstOrNull {
-            val ri = it.remoteInputs
-            ri != null && ri.isNotEmpty()
-        } ?: return err("no_reply_action")
+        val actions = sbn.notification.actions
+        if (actions == null || actions.isEmpty()) return err("no_reply_action")
 
-        val canonical = "notif.reply|$key|$text"
+        val resolvedIndex: Int = if (actionIndex >= 0) {
+            if (actionIndex >= actions.size) return err("action_index_out_of_range")
+            actionIndex
+        } else {
+            actions.indexOfFirst { a ->
+                val ri = a?.remoteInputs
+                ri != null && ri.isNotEmpty()
+            }
+        }
+        if (resolvedIndex < 0) return err("no_reply_action")
+
+        val action = actions[resolvedIndex] ?: return err("action_not_found")
+        val remoteInputs = action.remoteInputs
+        if (remoteInputs == null || remoteInputs.isEmpty()) {
+            return JSONObject()
+                .put("ok", false)
+                .put("error", "no_remote_input_on_action")
+                .put("action_index", resolvedIndex)
+                .put("action_title", action.title?.toString())
+        }
+
+        // If the caller named a result_key it must exist on this action.
+        if (resultKey != null && remoteInputs.none { it.resultKey == resultKey }) {
+            return JSONObject()
+                .put("ok", false)
+                .put("error", "result_key_not_found")
+                .put("action_index", resolvedIndex)
+        }
+
+        val canonical = "notif.reply|$key|$resolvedIndex|${resultKey ?: "*"}|$text"
         val summary = JSONObject()
             .put("pkg", sbn.packageName)
+            .put("action_index", resolvedIndex)
+            .put("action_title", action.title?.toString() ?: "")
+            .put("result_keys", JSONArray().also { a ->
+                for (ri in remoteInputs) if (resultKey == null || ri.resultKey == resultKey) a.put(ri.resultKey)
+            })
             .put("text_preview", text.take(40))
 
         ConfirmationGate.guard("notif.reply", canonical, summary, confirm)?.let { return it }
 
         return try {
             val results = Bundle()
-            for (ri in action.remoteInputs) results.putCharSequence(ri.resultKey, text)
+            val used = JSONArray()
+            for (ri in remoteInputs) {
+                if (resultKey != null && ri.resultKey != resultKey) continue
+                results.putCharSequence(ri.resultKey, text)
+                used.put(ri.resultKey)
+            }
             val intent = Intent()
-            RemoteInput.addResultsToIntent(action.remoteInputs, intent, results)
+            RemoteInput.addResultsToIntent(remoteInputs, intent, results)
+            RemoteInput.setResultsSource(intent, RemoteInput.SOURCE_FREE_FORM_INPUT)
             action.actionIntent.send(context, 0, intent)
             JSONObject()
                 .put("ok", true)
                 .put("replied", true)
                 .put("pkg", sbn.packageName)
+                .put("action_index", resolvedIndex)
+                .put("result_keys", used)
         } catch (e: Exception) {
             JSONObject()
                 .put("ok", false)
@@ -119,6 +178,7 @@ object ExternalActions {
     private fun notifAction(payload: JSONObject, confirm: String?, context: Context): JSONObject {
         val key = payload.optString("key")
         val title = payload.optString("title")
+        val actionIndex = if (payload.has("action_index")) payload.optInt("action_index", -1) else -1
 
         val instance = BodyNotificationListener.instance
             ?: return err("listener_not_connected")
@@ -132,14 +192,21 @@ object ExternalActions {
                 .put("pkg", sbn.packageName)
         }
 
-        val action: Notification.Action = sbn.notification.actions?.firstOrNull {
-            it.title?.toString().equals(title, ignoreCase = true)
-        } ?: return err("action_not_found")
+        val actions = sbn.notification.actions ?: return err("action_not_found")
+        val resolvedIndex = if (actionIndex >= 0) {
+            if (actionIndex >= actions.size) return err("action_index_out_of_range")
+            actionIndex
+        } else {
+            actions.indexOfFirst { it?.title?.toString().equals(title, ignoreCase = true) }
+        }
+        if (resolvedIndex < 0) return err("action_not_found")
+        val action: Notification.Action = actions[resolvedIndex] ?: return err("action_not_found")
 
-        val canonical = "notif.action|$key|$title"
+        val canonical = "notif.action|$key|$resolvedIndex|$title"
         val summary = JSONObject()
             .put("pkg", sbn.packageName)
-            .put("title", title)
+            .put("action_index", resolvedIndex)
+            .put("title", action.title?.toString() ?: title)
 
         ConfirmationGate.guard("notif.action", canonical, summary, confirm)?.let { return it }
 
@@ -148,11 +215,60 @@ object ExternalActions {
             JSONObject()
                 .put("ok", true)
                 .put("triggered", true)
+                .put("action_index", resolvedIndex)
         } catch (e: Exception) {
             JSONObject()
                 .put("ok", false)
                 .put("error", "action_failed")
                 .put("detail", e.message)
+        }
+    }
+
+    /**
+     * Shade housekeeping. NOT gated by ConfirmationGate and NOT allowlisted, deliberately:
+     * dismissing or snoozing has no effect outside this device — the underlying message
+     * still exists in the source app, and a snooze just reposts it later. That matches the
+     * gate's philosophy (gate = irreversible or externally visible), but it IS a
+     * security-relevant default, so it is stated here rather than left implicit.
+     */
+    private fun notifDismiss(payload: JSONObject): JSONObject {
+        val key = payload.optString("key")
+        if (key.isBlank()) return err("missing_params")
+        val instance = BodyNotificationListener.instance ?: return err("listener_not_connected")
+        val sbn = findSbn(instance, key) ?: return err("notification_not_found")
+        if (!sbn.isClearable) {
+            return JSONObject()
+                .put("ok", false)
+                .put("error", "not_clearable")
+                .put("pkg", sbn.packageName)
+        }
+        return try {
+            instance.cancelNotification(key)
+            JSONObject()
+                .put("ok", true)
+                .put("dismissed", true)
+                .put("pkg", sbn.packageName)
+        } catch (e: Exception) {
+            JSONObject().put("ok", false).put("error", "dismiss_failed").put("detail", e.message)
+        }
+    }
+
+    private fun notifSnooze(payload: JSONObject): JSONObject {
+        val key = payload.optString("key")
+        if (key.isBlank()) return err("missing_params")
+        // Default 10 minutes; clamp to something the framework will honour.
+        val duration = payload.optLong("duration_ms", 600_000L).coerceIn(1_000L, 86_400_000L)
+        val instance = BodyNotificationListener.instance ?: return err("listener_not_connected")
+        val sbn = findSbn(instance, key) ?: return err("notification_not_found")
+        return try {
+            instance.snoozeNotification(key, duration)
+            JSONObject()
+                .put("ok", true)
+                .put("snoozed", true)
+                .put("duration_ms", duration)
+                .put("pkg", sbn.packageName)
+        } catch (e: Exception) {
+            JSONObject().put("ok", false).put("error", "snooze_failed").put("detail", e.message)
         }
     }
 

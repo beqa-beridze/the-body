@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
 import com.beqa.body.BuildConfig
@@ -11,8 +12,14 @@ import com.beqa.body.a11y.BodyAccessibilityService
 import com.beqa.body.action.BodyActionExecutor
 import com.beqa.body.action.BodyAppLauncher
 import com.beqa.body.action.ExternalActions
+import com.beqa.body.media.MediaSelfCheck
+import com.beqa.body.media.MediaSessionReader
 import com.beqa.body.notify.BodyNotificationListener
+import com.beqa.body.notify.AskGate
+import com.beqa.body.notify.LoopbackReplyProbe
 import com.beqa.body.notify.NotificationReader
+import com.beqa.body.sense.DeviceContextReader
+import com.beqa.body.sense.SensorReader
 import com.beqa.body.screen.BodyScreenReader
 import com.beqa.body.security.BridgeTokenStore
 import fi.iki.elonen.NanoHTTPD
@@ -86,17 +93,22 @@ class BridgeHttpServer(
                 ))
                 "/describe_node" -> reply(200, BodyScreenReader.describeNode(qStr(session, "id", "")))
                 "/screen_diff" -> reply(200, BodyScreenReader.screenDiff(qStr(session, "hash", "")))
+                // display: which screen a fallback GESTURE targets. Defaults to 0 for
+                // compatibility, so a caller that never passes it behaves exactly as before -
+                // callers that care (bg-som.sh, driving a hidden display) must pass it.
                 "/tap" -> reply(200, BodyActionExecutor.tap(
                     id = qStrOrNull(session, "id"),
                     x = qIntOrNull(session, "x"),
                     y = qIntOrNull(session, "y"),
-                    fallbackText = qStrOrNull(session, "text")
+                    fallbackText = qStrOrNull(session, "text"),
+                    displayId = qInt(session, "display", 0)
                 ))
                 "/long_press" -> reply(200, BodyActionExecutor.longPress(
                     id = qStrOrNull(session, "id"),
                     x = qIntOrNull(session, "x"),
                     y = qIntOrNull(session, "y"),
-                    durationMs = qInt(session, "duration", 600)
+                    durationMs = qInt(session, "duration", 600),
+                    displayId = qInt(session, "display", 0)
                 ))
                 "/type_text" -> reply(200, BodyActionExecutor.typeText(
                     text = qStr(session, "text", ""),
@@ -107,15 +119,69 @@ class BridgeHttpServer(
                 "/scroll" -> reply(200, BodyActionExecutor.scroll(
                     direction = qStr(session, "direction", "down"),
                     id = qStrOrNull(session, "id"),
-                    distance = qStr(session, "distance", "medium")
+                    distance = qStr(session, "distance", "medium"),
+                    displayId = qInt(session, "display", 0)
                 ))
                 "/swipe" -> reply(200, BodyActionExecutor.swipe(
                     direction = qStr(session, "direction", "up"),
-                    distance = qStr(session, "distance", "medium")
+                    distance = qStr(session, "distance", "medium"),
+                    displayId = qInt(session, "display", 0)
                 ))
                 "/press_key" -> reply(200, BodyActionExecutor.pressKey(qStr(session, "key", "")))
-                "/notifications" -> reply(200, NotificationReader.list(qInt(session, "limit", 50)))
-                "/sms/send", "/notifications/reply", "/notifications/action" -> {
+                "/notifications" -> reply(200, NotificationReader.list(
+                    limit = qInt(session, "limit", 50),
+                    pkgFilter = qStrOrNull(session, "pkg")
+                ))
+                "/context" -> reply(200, DeviceContextReader.read(appContext))
+                "/media" -> reply(200, MediaSessionReader.read(appContext))
+                "/sensors" -> reply(200,
+                    if (qBool(session, "list", false)) SensorReader.list(appContext)
+                    else SensorReader.poll(
+                        ctx = appContext,
+                        timeoutMs = qInt(session, "timeout", 1500).toLong(),
+                        includeBattery = qBool(session, "battery", true),
+                        rateUs = qInt(session, "rate_us", android.hardware.SensorManager.SENSOR_DELAY_UI)
+                    )
+                )
+                // Loopback self-check for the RemoteInput reply path. Reaches nobody:
+                // the reply lands in a BroadcastReceiver inside this app.
+                // Known-answer test for /media: publishes a silent, request-scoped
+                // MediaSession and reads it back through the real reader.
+                "/selfcheck/media" -> reply(200, MediaSelfCheck.run(appContext))
+                // THE PHONE RULE'S ALARM (see notify/AskGate.kt). The ONLY route in this app
+                // that is allowed to make a sound on my phone, and it structurally cannot send
+                // an informational notification: every post is a YES/NO question with a pending
+                // answer, one at a time, capped per hour, auto-expiring.
+                "/ask" -> {
+                    val payload = payloadOf(session)
+                    when (payload.optString("op").ifBlank { "status" }) {
+                        "post" -> reply(200, AskGate.post(
+                            appContext,
+                            payload.optString("question"),
+                            payload.optLong("timeout_ms", 3_600_000L)
+                        ))
+                        "nag" -> reply(200, AskGate.nag(appContext, payload.optString("id").ifBlank { null }))
+                        "clear" -> reply(200, AskGate.clear(appContext, payload.optString("id").ifBlank { null }))
+                        // Fires the SAME PendingIntent the button carries. Proves the callback
+                        // path without faking a touch event on display 0.
+                        "fire_action" -> reply(200, AskGate.fireActionPendingIntent(
+                            appContext,
+                            payload.optString("id"),
+                            payload.optString("answer")
+                        ))
+                        else -> reply(200, AskGate.status(appContext, payload.optString("id").ifBlank { null }))
+                    }
+                }
+                "/selfcheck/reply" -> {
+                    val payload = payloadOf(session)
+                    when (payload.optString("op").ifBlank { "status" }) {
+                        "post" -> reply(200, LoopbackReplyProbe.post(appContext))
+                        "clear" -> reply(200, LoopbackReplyProbe.clear(appContext))
+                        else -> reply(200, LoopbackReplyProbe.status())
+                    }
+                }
+                "/sms/send", "/notifications/reply", "/notifications/action",
+                "/notifications/dismiss", "/notifications/snooze" -> {
                     val payload = payloadOf(session)
                     val confirm = payload.optString("confirm").ifBlank { null }
                     reply(200, ExternalActions.route(path, payload, confirm, appContext))
@@ -167,12 +233,32 @@ class BridgeHttpServer(
             .put("ok", true)
             .put("app", "body")
             .put("version", BuildConfig.VERSION_NAME)
-            .put("milestone", "M7")
+            .put("milestone", "M8")
             .put(
                 "capabilities",
                 JSONObject()
                     .put("accessibility", BodyAccessibilityService.isConnected())
                     .put("notifications", BodyNotificationListener.isConnected())
+                    // Advertised so a CALLER CAN REFUSE TO ACT against a build that lacks it.
+                    // Before this existed, passing ?display=N to an older build was silently
+                    // ignored and the gesture went to display 0 anyway — indistinguishable, from
+                    // the outside, from having worked. A capability you cannot verify is a
+                    // capability you cannot rely on. bg-som.sh hard-fails when this is absent.
+                    .put("display_targeting", Build.VERSION.SDK_INT >= 30)
+                    // M8 sense layer. Same reasoning as display_targeting: a caller must be
+                    // able to ASK whether the running build has these, not infer it from a
+                    // version string it cannot verify.
+                    .put("sense_layer", true)
+                    .put("context_endpoint", true)
+                    .put("media_endpoint", true)
+                    .put("sensors_endpoint", true)
+                    .put("notification_extras", true)
+                    .put("notification_dismiss", true)
+                    .put("notification_snooze", true)
+                    .put("reply_action_index", true)
+                    .put("reply_selfcheck", true)
+                    .put("media_selfcheck", true)
+                    .put("ask_gate", true)
             )
     }
 

@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.os.Build
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 
 /**
  * Accessibility service — the app's "eyes". Tracks the foreground package and exposes
@@ -32,6 +33,30 @@ class BodyAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         instance = null
         super.onDestroy()
+    }
+
+    /**
+     * LIVE foreground app on the DEFAULT display, read at call time from the window list.
+     *
+     * [foregroundPackage] is a cache of the last TYPE_WINDOW_STATE_CHANGED event, which goes
+     * stale whenever the service missed an event (LMK, service restart, a window change that
+     * fired no event). This asks the window manager instead. Both are reported by
+     * GET /context so a caller can see when they disagree rather than trusting one of them.
+     */
+    fun activeAppPackage(): String? {
+        return try {
+            val ws: List<AccessibilityWindowInfo> = windows ?: emptyList()
+            val active = ws.firstOrNull { w ->
+                try { w.type == AccessibilityWindowInfo.TYPE_APPLICATION && w.isActive }
+                catch (e: Exception) { false }
+            } ?: ws.firstOrNull { w ->
+                try { w.type == AccessibilityWindowInfo.TYPE_APPLICATION } catch (e: Exception) { false }
+            }
+            val pkg = try { active?.root?.packageName?.toString() } catch (e: Exception) { null }
+            pkg ?: try { rootInActiveWindow?.packageName?.toString() } catch (e: Exception) { null }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /** Root of the currently-focused window, or null. */

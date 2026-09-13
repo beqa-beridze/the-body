@@ -63,6 +63,19 @@
             </intent-filter>
         </service>
 
+        <!-- Receives the loopback reply used by /selfcheck/reply to PROVE the RemoteInput
+             path works without messaging a human. Not exported: only this app can reach it. -->
+        <receiver
+            android:name=".notify.LoopbackReplyReceiver"
+            android:exported="false" />
+
+        <!-- THE PHONE RULE'S ALARM. Receives the YES/NO button press from AskGate's
+             notification. NOT exported: nothing outside this app - not even `am broadcast`
+             from the adb shell - can forge an answer to a consent question. -->
+        <receiver
+            android:name=".notify.AskGateReceiver"
+            android:exported="false" />
+
         <receiver
             android:name=".service.BootReceiver"
             android:exported="false">

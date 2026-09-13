@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction
@@ -27,6 +28,11 @@ object BodyActionExecutor {
     private const val SETTLE_POLL_MS = 100L
     private const val SETTLE_MAX_MS = 500L
     private const val MAX_ANCESTOR_HOPS = 8
+
+    /** Display.DEFAULT_DISPLAY. Kept as a NAMED constant so that every gesture call site
+     *  states which screen it means. The old code stated it nowhere and meant this one
+     *  everywhere, which is exactly how the display-0 hole stayed invisible. */
+    private const val DEFAULT_DISPLAY = 0
     private const val HISTORY_MAX = 6
 
     private val DIRECTIONS = setOf("up", "down", "left", "right")
@@ -108,6 +114,7 @@ object BodyActionExecutor {
         hashBefore: String,
         hashAfter: String,
         targetKey: String,
+        displayId: Int,
         extras: JSONObject? = null
     ): JSONObject {
         val changed = hashAfter != hashBefore
@@ -121,6 +128,9 @@ object BodyActionExecutor {
             .put("hash_before", hashBefore)
             .put("hash_after", hashAfter)
             .put("stuck", stuck)
+            // Echoed so a caller can VERIFY which screen it hit instead of trusting that it
+            // asked nicely. bg-som.sh treats a mismatch here as a hard failure.
+            .put("display", displayId)
         if (stuck) {
             o.put(
                 "hint",
@@ -138,11 +148,19 @@ object BodyActionExecutor {
         svc: AccessibilityService,
         path: Path,
         durationMs: Long,
-        awaitMs: Long
+        awaitMs: Long,
+        displayId: Int = DEFAULT_DISPLAY
     ): Boolean {
         return try {
             val stroke = GestureDescription.StrokeDescription(path, 0L, durationMs.coerceAtLeast(1L))
-            val gesture = GestureDescription.Builder().addStroke(stroke).build()
+            // THE FIX (2026-08-19). GestureDescription.Builder defaults to Display.DEFAULT_DISPLAY
+            // (0) -- the real screen. Every swipe, every scroll, and every tap that fell through to
+            // a coordinate gesture landed there, while /read_screen and /find_nodes were already
+            // display-aware. Eyes on the hidden display, hands on my live one. setDisplayId is
+            // API 30+ and minSdk is 26, hence the guard; the target device is API 36.
+            val builder = GestureDescription.Builder().addStroke(stroke)
+            if (Build.VERSION.SDK_INT >= 30) builder.setDisplayId(displayId)
+            val gesture = builder.build()
             val latch = CountDownLatch(1)
             val completed = AtomicBoolean(false)
             val callback = object : AccessibilityService.GestureResultCallback() {
@@ -169,11 +187,12 @@ object BodyActionExecutor {
         x: Float,
         y: Float,
         durationMs: Long,
-        awaitMs: Long
+        awaitMs: Long,
+        displayId: Int = DEFAULT_DISPLAY
     ): Boolean {
         val path = Path()
         path.moveTo(x.coerceAtLeast(0f), y.coerceAtLeast(0f))
-        return dispatch(svc, path, durationMs, awaitMs)
+        return dispatch(svc, path, durationMs, awaitMs, displayId)
     }
 
     private fun screenBounds(svc: AccessibilityService): Rect {
@@ -215,7 +234,8 @@ object BodyActionExecutor {
         svc: AccessibilityService,
         bounds: Rect,
         fingerDirection: String,
-        distance: String
+        distance: String,
+        displayId: Int = DEFAULT_DISPLAY
     ): Boolean {
         val frac = when (distance.lowercase()) {
             "short" -> 0.3f
@@ -265,7 +285,7 @@ object BodyActionExecutor {
         val path = Path()
         path.moveTo(sx, sy)
         path.lineTo(ex, ey)
-        return dispatch(svc, path, 300L, 3000L)
+        return dispatch(svc, path, 300L, 3000L, displayId)
     }
 
     private fun oppositeDirection(d: String): String = when (d) {
@@ -299,16 +319,22 @@ object BodyActionExecutor {
         id: String? = null,
         x: Int? = null,
         y: Int? = null,
-        fallbackText: String? = null
-    ): JSONObject = clickLike("tap", id, x, y, fallbackText, longPress = false, pressDurationMs = 50L)
+        fallbackText: String? = null,
+        displayId: Int = DEFAULT_DISPLAY
+    ): JSONObject = clickLike(
+        "tap", id, x, y, fallbackText,
+        longPress = false, pressDurationMs = 50L, displayId = displayId
+    )
 
     fun longPress(
         id: String? = null,
         x: Int? = null,
         y: Int? = null,
-        durationMs: Int = 600
+        durationMs: Int = 600,
+        displayId: Int = DEFAULT_DISPLAY
     ): JSONObject = clickLike(
         "long_press", id, x, y, null,
+        displayId = displayId,
         longPress = true,
         pressDurationMs = durationMs.toLong().coerceAtLeast(100L)
     )
@@ -320,7 +346,8 @@ object BodyActionExecutor {
         y: Int?,
         fallbackText: String?,
         longPress: Boolean,
-        pressDurationMs: Long
+        pressDurationMs: Long,
+        displayId: Int = DEFAULT_DISPLAY
     ): JSONObject {
         return try {
             val svc = service() ?: return fail(actionName, "service_not_running")
@@ -416,7 +443,7 @@ object BodyActionExecutor {
                 val gy = gestureY
                 if (gx == null || gy == null) return fail(actionName, "no_target")
                 val awaitMs = if (longPress) 3000L else 2000L
-                if (!dispatchPoint(svc, gx, gy, pressDurationMs, awaitMs)) {
+                if (!dispatchPoint(svc, gx, gy, pressDurationMs, awaitMs, displayId)) {
                     return fail(actionName, "gesture_failed", "dispatchGesture returned false or timed out")
                 }
                 method = if (node != null) "gesture_fallback" else "coordinate"
@@ -428,7 +455,8 @@ object BodyActionExecutor {
                 verified = hashAfter != hashBefore,
                 hashBefore = hashBefore,
                 hashAfter = hashAfter,
-                targetKey = targetKey
+                targetKey = targetKey,
+                displayId = displayId
             )
         } catch (e: Exception) {
             fail(actionName, "exception", e.message ?: e.javaClass.simpleName)
@@ -518,6 +546,7 @@ object BodyActionExecutor {
                 hashBefore = hashBefore,
                 hashAfter = hashAfter,
                 targetKey = id?.toString() ?: "focused",
+                displayId = DEFAULT_DISPLAY,
                 extras = extras
             )
         } catch (e: Exception) {
@@ -527,7 +556,12 @@ object BodyActionExecutor {
 
     // ---------------------------------------------------------------- scroll
 
-    fun scroll(direction: String, id: String? = null, distance: String = "medium"): JSONObject {
+    fun scroll(
+        direction: String,
+        id: String? = null,
+        distance: String = "medium",
+        displayId: Int = DEFAULT_DISPLAY
+    ): JSONObject {
         return try {
             val svc = service() ?: return fail("scroll", "service_not_running")
             val dir = direction.lowercase()
@@ -585,7 +619,7 @@ object BodyActionExecutor {
             if (method == null) {
                 // Gesture fallback: scrolling content "down" means the finger moves up.
                 val bounds = nodeBoundsOrScreen(svc, baseNode)
-                if (!directionalGesture(svc, bounds, oppositeDirection(dir), distance)) {
+                if (!directionalGesture(svc, bounds, oppositeDirection(dir), distance, displayId)) {
                     return fail("scroll", "gesture_failed", "dispatchGesture returned false or timed out")
                 }
                 method = "gesture_fallback"
@@ -599,6 +633,7 @@ object BodyActionExecutor {
                 hashBefore = hashBefore,
                 hashAfter = hashAfter,
                 targetKey = targetKey,
+                displayId = displayId,
                 extras = JSONObject()
                     .put("direction", dir)
                     .put("scroll_progressed", progressed)
@@ -610,7 +645,11 @@ object BodyActionExecutor {
 
     // ---------------------------------------------------------------- swipe
 
-    fun swipe(direction: String, distance: String = "medium"): JSONObject {
+    fun swipe(
+        direction: String,
+        distance: String = "medium",
+        displayId: Int = DEFAULT_DISPLAY
+    ): JSONObject {
         return try {
             val svc = service() ?: return fail("swipe", "service_not_running")
             val dir = direction.lowercase()
@@ -619,7 +658,7 @@ object BodyActionExecutor {
             }
             val hashBefore = safeHash()
             val bounds = screenBounds(svc)
-            if (!directionalGesture(svc, bounds, dir, distance)) {
+            if (!directionalGesture(svc, bounds, dir, distance, displayId)) {
                 return fail("swipe", "gesture_failed", "dispatchGesture returned false or timed out")
             }
             val hashAfter = settle()
@@ -629,6 +668,7 @@ object BodyActionExecutor {
                 hashBefore = hashBefore,
                 hashAfter = hashAfter,
                 targetKey = dir,
+                displayId = displayId,
                 extras = JSONObject()
                     .put("direction", dir)
                     .put("distance", distance)
@@ -671,6 +711,7 @@ object BodyActionExecutor {
                 hashBefore = hashBefore,
                 hashAfter = hashAfter,
                 targetKey = key.lowercase(),
+                displayId = DEFAULT_DISPLAY,
                 extras = JSONObject().put("key", key.lowercase())
             )
         } catch (e: Exception) {
