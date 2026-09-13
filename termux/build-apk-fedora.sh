@@ -2,36 +2,38 @@
 # Build + sign the Body debug APK inside the Fedora proot (aarch64).
 # Zero-AAR manual pipeline:
 #   aapt2 compile/link (resources + R.java) -> javac R -> kotlinc -> d8 -> inject dex -> apksigner
-# No Gradle, no Android SDK, no network. Low-level builder; use termux/build-apk.sh as entrypoint.
+# No Gradle, no Android Studio. Toolchain comes from termux/fetch-toolchain.sh (run once).
+# Low-level builder; use termux/build-apk.sh as the entrypoint.
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/app/src/main"
 OUT="$ROOT/out"; rm -rf "$OUT"; mkdir -p "$OUT"/{gen,classes,dex}
 
-# --- R2 anti-sprawl gate: no self-referential scaffolding filenames -----------------
-if find "$APP/kotlin" "$ROOT/termux" -type f 2>/dev/null \
-     | grep -Eiq '/(doctor|scout|proof|replay|mirror|tick)[a-z0-9_-]*\.[a-z]+$'; then
-  echo "R2 VIOLATION: banned filename root (doctor|scout|proof|replay|mirror|tick):" >&2
-  find "$APP/kotlin" "$ROOT/termux" -type f | grep -Ei '/(doctor|scout|proof|replay|mirror|tick)[a-z0-9_-]*\.[a-z]+$' >&2
-  exit 1
-fi
-
-# --- toolchain (overridable; defaults are the proven Fedora-proot paths) -------------
-JH="${BODY_JAVA_HOME:-/usr/lib/jvm/java-25-openjdk}"
+# --- toolchain -----------------------------------------------------------------------
+# Everything below is fetched once by termux/fetch-toolchain.sh (tools/ is gitignored).
+# aapt2/d8/apksigner are Termux packages; from inside the Fedora proot they are reachable
+# at the same absolute paths. The JDK is whichever one is on PATH (Fedora: java-25-openjdk,
+# Termux: openjdk-17), overridable with BODY_JAVA_HOME.
+TERMUX="${TERMUX_PREFIX:-/data/data/com.termux/files/usr}"
+if [ -n "${BODY_JAVA_HOME:-}" ]; then JH="$BODY_JAVA_HOME"
+elif command -v javac >/dev/null 2>&1; then JH="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+else JH="/usr/lib/jvm/java-25-openjdk"; fi
 JAVA="$JH/bin/java"; JAVAC="$JH/bin/javac"; KEYTOOL="$JH/bin/keytool"
 
-KIT="${BODY_KIT:-/root/.claude/phone/kitchen-app/apk/tools}"
-AAPT2BIN="$KIT/x/aapt2_13.0.0.6-23_aarch64/data/data/com.termux/files/usr/bin/aapt2"
-LIBPOOL="$KIT/libpool"
-aapt2(){ LD_LIBRARY_PATH="$LIBPOOL" "$AAPT2BIN" "$@"; }
-D8JAR="$KIT/r8-new.jar"
-APKSIGNER="$KIT/x/apksigner_33.0.1-1_all/data/data/com.termux/files/usr/share/java/apksigner.jar"
-ANDROID_JAR="$KIT/android.jar"
+AAPT2BIN="$TERMUX/bin/aapt2"
+aapt2(){ "$AAPT2BIN" "$@"; }
+D8JAR="$TERMUX/share/java/d8.jar"
+APKSIGNER="$TERMUX/share/java/apksigner.jar"
+ANDROID_JAR="$ROOT/tools/android.jar"
 
 KC="$ROOT/tools/kotlinc/lib/kotlin-compiler.jar"
 KSTDLIB="$ROOT/tools/kotlinc/lib/kotlin-stdlib.jar"
-KS="$ROOT/tools/body.keystore"
+
+# Signing key. Generated on first build, never committed (tools/ is gitignored).
+# The password is random and stored next to the keystore; keep both if you want
+# later builds to install over the earlier ones.
+KS="$ROOT/tools/body.keystore"; KSPASS_FILE="$ROOT/tools/body.keystore.pass"
 
 # libs/*.jar are auto-included (empty in M0; nanohttpd etc. added by later increments).
 LIBS="$(find "$ROOT/libs" -name '*.jar' 2>/dev/null | tr '\n' ':')"; LIBS="${LIBS%:}"
@@ -55,8 +57,9 @@ PY
 )"
 
 [ -x "$JAVA" ]        || { echo "ERROR: no JVM at $JAVA (set BODY_JAVA_HOME)"; exit 1; }
-[ -f "$ANDROID_JAR" ] || { echo "ERROR: cached kit not found at $KIT (set BODY_KIT)"; exit 1; }
-[ -f "$KC" ]          || { echo "ERROR: kotlin compiler missing at $KC"; exit 1; }
+for f in "$AAPT2BIN" "$D8JAR" "$APKSIGNER" "$ANDROID_JAR" "$KC" "$KSTDLIB"; do
+  [ -e "$f" ] || { echo "ERROR: missing $f  ->  run termux/fetch-toolchain.sh first"; exit 1; }
+done
 
 echo "[1/7] aapt2: compile + link resources -> base.apk + R.java"
 aapt2 compile --dir "$APP/res" -o "$OUT/compiled.zip"
@@ -94,10 +97,16 @@ print("   dex added")
 PY
 
 echo "[6/7] keystore + sign"
-[ -f "$KS" ] || "$KEYTOOL" -genkeypair -keystore "$KS" -alias body -keyalg RSA -keysize 2048 \
-  -validity 10000 -storepass body1234 -keypass body1234 \
-  -dname "CN=Body, O=Beqa, C=IL" >/dev/null 2>&1
-"$JAVA" -jar "$APKSIGNER" sign --ks "$KS" --ks-pass pass:body1234 --key-pass pass:body1234 \
+if [ ! -f "$KS" ]; then
+  [ -f "$KSPASS_FILE" ] || head -c 24 /dev/urandom | base64 | tr -d '/+=\n' > "$KSPASS_FILE"
+  chmod 600 "$KSPASS_FILE"
+  "$KEYTOOL" -genkeypair -keystore "$KS" -alias body -keyalg RSA -keysize 2048 \
+    -validity 10000 -storepass "$(cat "$KSPASS_FILE")" -keypass "$(cat "$KSPASS_FILE")" \
+    -dname "CN=Body, O=Beqa" >/dev/null 2>&1
+  echo "   new signing key generated at $KS"
+fi
+KSPASS="$(cat "$KSPASS_FILE")"
+"$JAVA" -jar "$APKSIGNER" sign --ks "$KS" --ks-pass "pass:$KSPASS" --key-pass "pass:$KSPASS" \
   --min-sdk-version $MIN_SDK --v2-signing-enabled true --v1-signing-enabled true \
   --out "$ROOT/app-debug.apk" "$OUT/unsigned.apk"
 

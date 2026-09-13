@@ -1,3 +1,4 @@
 out/
 app-debug.apk
 *.idsig
+tools/
