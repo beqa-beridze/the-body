@@ -1,9 +1,9 @@
-"""android-body — control the phone through the local Body bridge.
+"""android-body: control the phone through the local Body bridge.
 
 The Body app (com.beqa.body) runs a loopback HTTP API on 127.0.0.1:8765. This plugin
 registers android_* tools that call it. Tools stay listed even when the app is closed;
 `_bridge_alive()` (a /health ping) gates dispatch. The bearer token is read from
-$ANDROID_BRIDGE_TOKEN or ~/.config/body/bridge_token — never logged.
+$ANDROID_BRIDGE_TOKEN or ~/.config/body/bridge_token, and never logged.
 """
 from __future__ import annotations
 
@@ -92,18 +92,18 @@ _TOOLS = [
     ("android_find_nodes", "🔎", _get("/find_nodes", ("text", "desc", "rid", "class", "clickable", "exact", "limit")),
      _obj({"text": S, "desc": S, "rid": S, "class": S, "clickable": B, "exact": B, "limit": I}),
      "Find on-screen elements matching text/content-desc/resource-id/class without dumping the whole tree. Returns ids you can tap."),
-    ("android_describe_node", "🔬", _get("/describe_node", ("id",)), _obj({"id": I}, ("id",)),
+    ("android_describe_node", "🔬", _get("/describe_node", ("id",)), _obj({"id": S}, ("id",)),
      "Full properties (bounds, enabled, supported actions) of one element id from the last read_screen/find_nodes."),
     ("android_screen_diff", "🔀", _get("/screen_diff", ("hash",)), _obj({"hash": S}),
-     "Cheap 'did the screen change?' check — pass the previous screen_hash; returns changed + new hash without re-dumping."),
+     "Cheap 'did the screen change?' check. Pass the previous screen_hash, and it returns changed + new hash without re-dumping."),
     ("android_tap", "👆", _get("/tap", ("id", "x", "y", "text")),
-     _obj({"id": I, "x": I, "y": I, "text": S}),
+     _obj({"id": S, "x": I, "y": I, "text": S}),
      "Tap an element by its id (preferred), by coordinates, or by fallback text. Returns whether the screen changed + a stuck flag."),
     ("android_type_text", "⌨️", _get("/type_text", ("text", "id", "clear", "submit")),
-     _obj({"text": S, "id": I, "clear": B, "submit": B}, ("text",)),
+     _obj({"text": S, "id": S, "clear": B, "submit": B}, ("text",)),
      "Type text into a field (by id, else the focused input). Verifies the field contents afterward."),
     ("android_scroll", "📜", _get("/scroll", ("direction", "id", "distance")),
-     _obj({"direction": {**S, "enum": ["up", "down", "left", "right"]}, "id": I, "distance": {**S, "enum": ["short", "medium", "long"]}}, ("direction",)),
+     _obj({"direction": {**S, "enum": ["up", "down", "left", "right"]}, "id": S, "distance": {**S, "enum": ["short", "medium", "long"]}}, ("direction",)),
      "Scroll a list/screen in a direction."),
     ("android_swipe", "↔️", _get("/swipe", ("direction", "distance")),
      _obj({"direction": {**S, "enum": ["up", "down", "left", "right"]}, "distance": {**S, "enum": ["short", "medium", "long"]}}, ("direction",)),
@@ -118,7 +118,7 @@ _TOOLS = [
      "List active notifications with titles/text and which have an inline reply."),
     ("android_notification_reply", "💬", _post("/notifications/reply", ("key", "text", "confirm")),
      _obj({"key": S, "text": S, "confirm": S}, ("key", "text")),
-     "Reply to a messaging notification IN THE BACKGROUND (no screen takeover). Two-step: first call returns confirmation_required + a confirm_token + a summary — show the summary to the user, and only call again with confirm=<token> and the identical key/text after they approve."),
+     "Reply to a messaging notification IN THE BACKGROUND (no screen takeover). Two-step: first call returns confirmation_required + a confirm_token + a summary. Show the summary to the user, and only call again with confirm=<token> and the identical key/text after they approve."),
     ("android_send_sms", "✉️", _post("/sms/send", ("to", "body", "confirm")),
      _obj({"to": S, "body": S, "confirm": S}, ("to", "body")),
      "Send an SMS. Two-step confirm like android_notification_reply: relay the summary to the user, then re-call with confirm=<token> + identical to/body."),

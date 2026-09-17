@@ -48,7 +48,7 @@ class BridgeTokenActivity : Activity() {
 
         // Subtitle
         column.addView(TextView(this).apply {
-            text = "The local API key the Hermes agent uses to reach this phone. Keep it private."
+            text = "The local API key your agent uses to reach this phone. Keep it private."
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -107,8 +107,9 @@ class BridgeTokenActivity : Activity() {
 
         // Helper footer
         column.addView(TextView(this).apply {
-            text = "Give this to Hermes as ANDROID_BRIDGE_TOKEN in ~/.hermes/.env, " +
-                "or write it to ~/.config/body/bridge_token."
+            text = "Write it to Termux's home, at\n" +
+                "/data/data/com.termux/files/home/.config/body/bridge_token\n" +
+                "Not Fedora's /root. See docs/install.md."
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,

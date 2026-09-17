@@ -23,7 +23,7 @@ object ExternalActions {
         "com.facebook.orca",
         "com.instagram.android",
         // Our own loopback self-check notification. Replying to it reaches a
-        // BroadcastReceiver inside this same app and no human being — it exists so the
+        // BroadcastReceiver inside this same app and no human being. It exists so the
         // reply path can be PROVEN without messaging anyone.
         "com.beqa.body"
     )
@@ -82,7 +82,7 @@ object ExternalActions {
      *
      * M8d change: optional `action_index` (the `index` field GET /notifications now returns).
      * Without it this fell back to "first action carrying any RemoteInput" and then stuffed
-     * the same text into EVERY result key on that action — silently wrong for any app that
+     * the same text into EVERY result key on that action, which is silently wrong for any app that
      * ships two reply actions, or one action with two distinct inputs. The index is folded
      * into the confirmation canonical string, so a token minted for index 0 cannot be
      * replayed against index 1.
@@ -226,7 +226,7 @@ object ExternalActions {
 
     /**
      * Shade housekeeping. NOT gated by ConfirmationGate and NOT allowlisted, deliberately:
-     * dismissing or snoozing has no effect outside this device — the underlying message
+     * dismissing or snoozing has no effect outside this device. The underlying message
      * still exists in the source app, and a snooze just reposts it later. That matches the
      * gate's philosophy (gate = irreversible or externally visible), but it IS a
      * security-relevant default, so it is stated here rather than left implicit.

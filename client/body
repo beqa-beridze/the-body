@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# body — comfortable control CLI for the on-device Body bridge (com.beqa.body)
+# body, the wrapper I use to talk to the Body bridge (com.beqa.body) from inside the proot.
 # Talks to the loopback accessibility bridge; no ADB in the control loop.
 set -u
 BASE="${BODY_BASE:-http://127.0.0.1:8765}"
@@ -15,7 +15,7 @@ _enc() { python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[
 _pp() {
 local raw; raw="$(cat)"
 BODY_JSON="$raw" python3 <<'PY'
-import os,json
+import os,json,sys
 raw=os.environ.get("BODY_JSON","")
 try: d=json.loads(raw)
 except Exception:
@@ -23,7 +23,7 @@ except Exception:
 if not d.get("ok", True):
     print(json.dumps(d, indent=2)); sys.exit(0)
 app=d.get("app",""); h=d.get("screen_hash",""); g=d.get("generation","")
-els=d.get("elements") or d.get("nodes") or []
+els=d.get("elements") or d.get("matches") or []
 print(f"# app={app}  hash={h}  gen={g}  ({len(els)} elements)")
 for e in els:
     i=e.get("id","?"); role=e.get("role","")
@@ -61,7 +61,7 @@ case "$cmd" in
   raw)     _get "$1" ; echo ;;
   rawpost) _post "$1" "${2:-}" ; echo ;;
   help|*)  cat <<EOF
-body — drive the phone through the Body bridge
+body: drive the phone through the Body bridge
   screen [full]        read the screen (numbered, tappable elements)
   find <text> [limit]  find nodes by text
   desc <id>            details for one element

@@ -42,9 +42,7 @@ Full detail for each one is further down. Anything marked gated needs the two-st
 
 ---
 
-
 ---
-
 
 ## Transport
 
@@ -172,7 +170,7 @@ The only unauthenticated routes. `/` and `/health` return the identical body. It
 
 - `capabilities.accessibility` is `BodyAccessibilityService.isConnected()`, meaning `instance != null`.
 - `capabilities.notifications` is `BodyNotificationListener.isConnected()`, meaning `connected && instance != null`.
-- `capabilities.display_targeting` is `Build.VERSION.SDK_INT >= 30`. The code comment is explicit about why: on an older build `?display=N` was silently ignored and the gesture went to display 0 anyway. Callers driving a hidden display are expected to hard-fail when this is false.
+- `capabilities.display_targeting` is `Build.VERSION.SDK_INT >= 30`. On an older build `?display=N` was silently ignored and the gesture went to display 0 anyway, which is indistinguishable from it working. Callers driving a hidden display are expected to hard-fail when this is false.
 - The remaining eleven flags are **hardcoded `true`** in this build. They are build-version advertisements, not live probes.
 
 **`/health` takes no token and no parameters. Everything else on this server needs a token**, including `/state`, which is otherwise the most health-looking route in the API. `/health` tells you the bridge is alive and what it can do. It tells you nothing about whether your token is valid. To validate a token, call `/state`.
@@ -307,8 +305,6 @@ Success:
 ```
 
 Errors: `{"ok":false,"error":"service_not_running"}`
-
-Things the code does that a reader would not assume:
 
 - **Matches always carry `bounds`.** `findWalk` calls `compactNode(..., includeBounds = true)` unconditionally. There is no `bounds` parameter here.
 - **There is no `truncated` field.** The budget silently stops the walk at `limit`. If `count == limit`, assume there may be more.
@@ -481,7 +477,7 @@ Errors:
 
 **`text=` bumps the generation.** The fallback path calls `BodyScreenReader.findNodes(text = ..., limit = 1)` internally, which rebuilds the id map, so every id you were holding is invalid after a text-fallback tap.
 
-`display` defaults to `0` rather than "whatever was last read". The comment in the router says so explicitly: a caller that never passes it behaves exactly as before, and callers driving a hidden display **must** pass it.
+`display` defaults to `0` rather than "whatever was last read", so a caller that never passes it behaves exactly as it did before displays existed. If you're driving a hidden display you **must** pass it every time.
 
 ---
 
@@ -563,8 +559,6 @@ Errors:
 - `bad_id`, `stale_generation` and `node_stale`, with hint `re-read_screen`
 - `gesture_failed` with hint `dispatchGesture returned false or timed out`
 - `exception`
-
-Semantics worth stating plainly:
 
 - `direction` is the **content** direction. With `id`, `down` and `right` map to `ACTION_SCROLL_FORWARD` while `up` and `left` map to `ACTION_SCROLL_BACKWARD`. In the gesture fallback the finger travels the **opposite** way (`oppositeDirection(dir)`).
 - The ancestor walk here allows `hops <= 8`, which is nine levels including the node itself, one more than `/tap`'s `hops < 8`.
@@ -715,7 +709,7 @@ From extras, each only when non-blank: `title`, `title_big`, `text`, `big_text`,
 
 Three ranking fields are **also promoted to the top level**: `is_conversation`, `importance` and `channel_name`. Note that `channel_id` appears at top level from the `Notification` and again inside `ranking` from the channel object, and in principle they can differ.
 
-**There is deliberately no `dismissible` field.** The source states it outright: `clearable` (`StatusBarNotification.isClearable`) *is* the "can I dismiss this" answer, and no duplicate was added.
+**There is deliberately no `dismissible` field.** `clearable` (`StatusBarNotification.isClearable`) already *is* the "can I dismiss this" answer, so I didn't add a second name for it.
 
 ---
 
@@ -869,7 +863,7 @@ This covers **every** sensor (`Sensor.TYPE_ALL`). Errors: `{"ok":false,"error":"
 
 **This is a one-shot poll, never a stream.** Listeners are registered, awaited, then unregistered in a `finally` with the HandlerThread quit, so nothing survives the request and a caller wanting a time series must poll repeatedly. Note that the request **blocks a NanoHTTPD worker thread** for up to `timeout_ms`.
 
-**Do not set `rate_us=0`.** The source documents a verified device bug: at `SENSOR_DELAY_FASTEST` (0 us) the accelerometer, gyroscope and magnetometer never register at all, and `dumpsys` shows `result=BAD_VALUE`, because an app targeting API 31+ without `HIGH_SAMPLING_RATE_SENSORS` cannot exceed 200 Hz. Light, proximity and pressure are unaffected, which makes the failure look like "some sensors are just slow". The default of `2`, around 16 Hz, registers fine.
+**Do not set `rate_us=0`.** I hit a real device bug there. At `SENSOR_DELAY_FASTEST` (0 us) the accelerometer, gyroscope and magnetometer never register at all, and `dumpsys` shows `result=BAD_VALUE`, because an app targeting API 31+ without `HIGH_SAMPLING_RATE_SENSORS` cannot exceed 200 Hz. Light, proximity and pressure are unaffected, which makes the failure look like "some sensors are just slow". The default of `2`, around 16 Hz, registers fine.
 
 ---
 
@@ -1016,7 +1010,7 @@ The first five keys are always present, and `id` may be JSON `null`. The last si
 ```
 or `{"exists": false, "id": "body_phone_rule_ask"}`. `sound` may be JSON `null`, and `blocked_app_level` is `!areNotificationsEnabled()`.
 
-**The structural guarantees**, which are the point of this route: there is no informational mode, because every post is a YES/NO question with a pending answer. There is **one** pending ask at a time, a cap of **6** new asks per rolling hour with re-nags free, and every notification carries `setTimeoutAfter()` so a crashed caller cannot leave a stuck alarm. Answering cancels the notification from inside the receiver. The channel is `body_phone_rule_ask` at `IMPORTANCE_HIGH` with sound and vibration, created once, and the source warns that `createNotificationChannel` can only *lower* importance afterwards, so if it is ever found demoted the fix is a new channel id rather than a code change. `AskGateReceiver` is manifest-registered and **not exported**, so nothing outside the app can forge an answer, including `am broadcast` from adb.
+**The structural guarantees**, which are the point of this route: there is no informational mode, because every post is a YES/NO question with a pending answer. There is **one** pending ask at a time, a cap of **6** new asks per rolling hour with re-nags free, and every notification carries `setTimeoutAfter()` so a crashed caller cannot leave a stuck alarm. Answering cancels the notification from inside the receiver. The channel is `body_phone_rule_ask` at `IMPORTANCE_HIGH` with sound and vibration, created once. `createNotificationChannel` can only ever *lower* a channel's importance afterwards, so if you find it demoted the fix is a new channel id, not a code change. `AskGateReceiver` is manifest-registered and **not exported**, so nothing outside the app can forge an answer, including `am broadcast` from adb.
 
 ---
 
@@ -1067,7 +1061,7 @@ Each node contributes `shortClass|text|desc|rid|state|checked`, with **no labels
 
 **Which routes use it:** `/sms/send`, `/notifications/reply` and `/notifications/action`, and **only** those three.
 
-**Which routes deliberately do not:** `/notifications/dismiss` and `/notifications/snooze`. The source states the reasoning: dismissing or snoozing has no effect outside this device, because the underlying message still exists in the source app and a snooze just reposts it later, which matches the gate's philosophy of gating what is irreversible or externally visible. Also ungated are `/launch`, which can open any URL or app, and every action route such as `/tap` and `/type_text`.
+**Which routes deliberately do not:** `/notifications/dismiss` and `/notifications/snooze`. Dismissing or snoozing has no effect outside this device, because the underlying message still exists in the source app and a snooze just reposts it later, which matches the gate's philosophy of gating what is irreversible or externally visible. Also ungated are `/launch`, which can open any URL or app, and every action route such as `/tap` and `/type_text`.
 
 ### Phase 1, call without confirm
 
@@ -1187,10 +1181,8 @@ Errors:
 
 You also get the gate response described in the confirmation gate section.
 
-Behaviour worth stating:
-
 - **`text` is never validated.** It defaults to `""`, so a request missing `text` sends an empty reply rather than erroring.
-- **Without `action_index`**, resolution falls back to "the first action carrying any RemoteInput", which is silently wrong for an app shipping two reply actions. The source calls this out as the reason `action_index` exists. Read `index` or `reply_action_index` from `GET /notifications` and pass it.
+- **Without `action_index`**, resolution falls back to "the first action carrying any RemoteInput", which is silently wrong for an app shipping two reply actions. That is the whole reason `action_index` exists. Read `index` or `reply_action_index` from `GET /notifications` and pass it.
 - **Without `result_key`, the text is written into *every* RemoteInput on the chosen action.** Name a `result_key` when an action carries more than one input.
 - The intent is sent with `RemoteInput.setResultsSource(intent, SOURCE_FREE_FORM_INPUT)`.
 
@@ -1353,23 +1345,23 @@ A blocked request returns `{"ok":false,"error":"not_allowlisted","pkg":"<package
 1. **HTTP status is not the error channel.** Only 5 server-level failures use non-200 codes, and every handler error, including every refusal to act, arrives as 200 with `ok:false`. Always read `ok`.
 2. **The confirmation gate returns `ok:false` on success of phase 1.** `confirmation_required:true` means "ask again with the token", not "it failed".
 3. **A bad `confirm` token issues a new token** with `error:"confirm_invalid"` rather than failing, so blind retries loop forever and burn pending slots, of which there are only 5.
-4. **Every POST route also works as a GET** with query parameters, because the method is never checked. Conversely, **PUT bodies are silently discarded** by NanoHTTPD 2.3.1's `"content"` versus `"postData"` key mismatch.
-5. **Send `charset=UTF-8`.** Without it the body is decoded as US-ASCII and non-ASCII text is destroyed before any handler sees it.
-6. **`qBool` only accepts `"1"` and `"true"`.** `clear=no` silently means `clear=false`, and `verbose=yes` silently means false.
+4. Every POST route also works as a GET with query parameters, because the method is never checked. Conversely, **PUT bodies are silently discarded** by NanoHTTPD 2.3.1's `"content"` versus `"postData"` key mismatch.
+5. Send `charset=UTF-8`. Without it the body is decoded as US-ASCII and non-ASCII text is destroyed before any handler sees it.
+6. `qBool` only accepts `"1"` and `"true"`. `clear=no` silently means `clear=false`, and `verbose=yes` silently means false.
 7. **`/read_screen`, `/find_nodes`, `/wait_for` (with text or rid) and `/tap?text=` all bump the generation** and invalidate every outstanding node id, for every client rather than just yours.
-8. **`/scroll` and `/swipe` mean opposite things by `direction`**, one being content direction and the other finger direction.
-9. **`distance` silently falls back to medium (0.6)** for any unrecognised value, including typos.
-10. **`verified` and `screen_changed` are computed against display 0 always**, so cross-display actions look unverified even when they worked, and `settle()` gives up after 500 ms, so slow UIs also report `screen_changed:false`.
-11. **`display` defaults to `0`** on the gesture routes rather than to whatever display you last read, and it only steers the gesture fallback, because node resolution follows the display the id map was built from.
-12. **`/find_nodes` with no selectors returns everything visible**, cannot see systemui, always includes bounds, and never tells you it truncated, so `count == limit` is your only clue.
-13. **`/screen_diff`'s `added_labels` and `removed_labels` are always empty.**
-14. **`/wait_for`'s `found:false` is a timeout, not an error**, and with `gone=1` a `found:true` means the target vanished.
-15. **`/notifications/reply` with no `action_index` guesses**, and with no `result_key` it writes your text into every RemoteInput on the action. A blank `text` sends an empty reply without complaint.
-16. **`/notifications/action` is allowlisted too**, using the same eight packages, even though it triggers ordinary buttons.
+8. `/scroll` and `/swipe` mean opposite things by `direction`, one being content direction and the other finger direction.
+9. `distance` silently falls back to medium (0.6) for any unrecognised value, including typos.
+10. `verified` and `screen_changed` are computed against display 0 always, so cross-display actions look unverified even when they worked, and `settle()` gives up after 500 ms, so slow UIs also report `screen_changed:false`.
+11. `display` defaults to `0` on the gesture routes rather than to whatever display you last read, and it only steers the gesture fallback, because node resolution follows the display the id map was built from.
+12. `/find_nodes` with no selectors returns everything visible, cannot see systemui, always includes bounds, and never tells you it truncated, so `count == limit` is your only clue.
+13. `/screen_diff`'s `added_labels` and `removed_labels` are always empty.
+14. `/wait_for`'s `found:false` is a timeout, not an error, and with `gone=1` a `found:true` means the target vanished.
+15. `/notifications/reply` with no `action_index` guesses, and with no `result_key` it writes your text into every RemoteInput on the action. A blank `text` sends an empty reply without complaint.
+16. `/notifications/action` is allowlisted too, using the same eight packages, even though it triggers ordinary buttons.
 17. **`rate_limited` means two different things.** HTTP 429 comes from the auth limiter (5 failures in 60 s gives a 5 minute block, and it blocks the *whole* loopback because the key is the IP), while HTTP 200 comes from AskGate's 6-asks-per-hour cap.
-18. **`/health` needs no token but `/state` does**, and `/health` cannot tell you whether your token is good.
-19. **`/ask` status can return `"state":"YES"` or `"state":"NO"`**, because the answer *is* the state. And `op=clear` with a mismatched id returns `ok:true` alongside an `error` key.
-20. **`/current_app` returns `ok:true` with `package:null`** when the accessibility service is down, so it never reports an error.
-21. **`/sensors` polls only 8 fixed sensor types** regardless of what `list=1` shows, always returns `ok:true`, echoes the *clamped* timeout, and must not be called with `rate_us=0`.
-22. **`/describe_node`'s `bad_id` hint always says "generation 0"**, so do not parse the current generation out of it.
-23. **Key naming is not uniform.** `/state` is camelCase while everything else is snake_case, the same value appears as `rid` in the compact node and `viewId` in `/describe_node`, and packages appear as `pkg` in notifications and media but `package` in `/list_apps` and `/current_app`.
+18. `/health` needs no token but `/state` does, and `/health` cannot tell you whether your token is good.
+19. `/ask` status can return `"state":"YES"` or `"state":"NO"`, because the answer *is* the state. And `op=clear` with a mismatched id returns `ok:true` alongside an `error` key.
+20. `/current_app` returns `ok:true` with `package:null` when the accessibility service is down, so it never reports an error.
+21. `/sensors` polls only 8 fixed sensor types regardless of what `list=1` shows, always returns `ok:true`, echoes the *clamped* timeout, and must not be called with `rate_us=0`.
+22. `/describe_node`'s `bad_id` hint always says "generation 0", so do not parse the current generation out of it.
+23. Key naming is not uniform. `/state` is camelCase while everything else is snake_case, the same value appears as `rid` in the compact node and `viewId` in `/describe_node`, and packages appear as `pkg` in notifications and media but `package` in `/list_apps` and `/current_app`.

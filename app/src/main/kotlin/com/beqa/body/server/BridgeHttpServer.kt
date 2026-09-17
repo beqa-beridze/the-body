@@ -241,7 +241,7 @@ class BridgeHttpServer(
                     .put("notifications", BodyNotificationListener.isConnected())
                     // Advertised so a CALLER CAN REFUSE TO ACT against a build that lacks it.
                     // Before this existed, passing ?display=N to an older build was silently
-                    // ignored and the gesture went to display 0 anyway — indistinguishable, from
+                    // ignored and the gesture went to display 0 anyway, indistinguishable from
                     // the outside, from having worked. A capability you cannot verify is a
                     // capability you cannot rely on. bg-som.sh hard-fails when this is absent.
                     .put("display_targeting", Build.VERSION.SDK_INT >= 30)

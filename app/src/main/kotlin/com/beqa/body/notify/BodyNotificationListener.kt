@@ -3,7 +3,7 @@ package com.beqa.body.notify
 import android.service.notification.NotificationListenerService
 
 /**
- * Notification listener — the app's "ears". Exposes a live handle so the reader can
+ * Notification listener, the app's "ears". Exposes a live handle so the reader can
  * enumerate active notifications; reading/replying logic lives in the notify module.
  */
 class BodyNotificationListener : NotificationListenerService() {

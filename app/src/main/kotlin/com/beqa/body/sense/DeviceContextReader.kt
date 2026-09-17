@@ -16,10 +16,10 @@ import com.beqa.body.notify.BodyNotificationListener
 import org.json.JSONObject
 
 /**
- * M8a — "where is the phone right now": foreground app, screen/lock state, power, thermal.
+ * M8a, "where is the phone right now": foreground app, screen/lock state, power, thermal.
  *
  * Deliberately uses NO new permission. `foreground_app` comes from the accessibility
- * service (already granted), NOT from UsageStatsManager — PACKAGE_USAGE_STATS would need
+ * service (already granted), NOT from UsageStatsManager, because PACKAGE_USAGE_STATS would need
  * an explicit Settings > Usage Access tap, and it is not declared in the manifest.
  *
  * Every field is individually try/caught: one OEM quirk must never blank the whole reply.

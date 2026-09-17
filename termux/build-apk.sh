@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Body APK builder — environment-adaptive entrypoint.
+# Builds the Body APK. Runs the pipeline here if there's a JDK, otherwise hops into the Fedora proot.
 #
 # The real build is a manual pipeline (aapt2 -> javac -> kotlinc -> d8 -> apksigner)
 # needing a JDK plus the pieces termux/fetch-toolchain.sh downloads into tools/.
@@ -18,15 +18,16 @@ have_kit()  { [ -f "$ROOT/tools/android.jar" ] && [ -f "$ROOT/tools/kotlinc/lib/
 
 # 1) toolchain reachable here: build directly.
 if have_java && have_kit; then
-  echo "[build-apk] toolchain reachable — building directly."
+  echo "[build-apk] toolchain is here, building directly."
   exec bash "$FEDORA_BUILD" "$@"
 fi
 
 # 2) native Termux: delegate into the Fedora proot.
 if [ -n "${PREFIX:-}" ] && command -v proot-distro >/dev/null 2>&1; then
   if proot-distro list 2>&1 | grep -qiE '(^|[[:space:]*])fedora([[:space:]]|$)' \
+     || [ -d "$PREFIX/var/lib/proot-distro/containers/fedora/rootfs" ] \
      || [ -d "$PREFIX/var/lib/proot-distro/installed-rootfs/fedora" ]; then
-    echo "[build-apk] no JDK here — delegating to Fedora proot…"
+    echo "[build-apk] no JDK here, hopping into the Fedora proot"
     exec proot-distro login fedora -- bash -lc "cd '$ROOT' && bash termux/build-apk-fedora.sh"
   fi
 fi

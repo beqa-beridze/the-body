@@ -13,12 +13,12 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * M8f — ONE-SHOT sensor poll. Explicitly NOT a stream.
+ * M8f, a ONE-SHOT sensor poll. Explicitly NOT a stream.
  *
  * Every call registers listeners, waits for the first sample from each (or a short
  * timeout), then unregisters in a `finally` and quits its own HandlerThread. Nothing
  * survives the request, so nothing can drain the battery between requests. If a caller
- * wants a time series it must poll — that is the deliberate design, not a limitation.
+ * wants a time series it must poll. That's on purpose.
  *
  * Battery/charging lives in [DeviceContextReader.battery] (a sticky broadcast, no
  * listener at all) and is folded in here for convenience.
@@ -61,7 +61,7 @@ object SensorReader {
     }
 
     /**
-     * @param timeoutMs how long to wait for first samples. Capped at 5s — this blocks a
+     * @param timeoutMs how long to wait for first samples. Capped at 5s, because this blocks a
      *        NanoHTTPD worker thread, and a sensor that has not fired in 5s will not fire.
      */
     fun poll(

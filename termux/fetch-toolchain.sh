@@ -10,8 +10,8 @@
 #   android.jar            Google's platform-33 package, only android.jar is kept
 #   JDK                    Fedora: dnf install java-25-openjdk-devel   Termux: pkg install openjdk-17
 #
-# tools/ is gitignored. Run this once from either Termux or the proot; it downloads
-# ~130 MB. Re-running is a no-op for anything already present.
+# tools/ is gitignored. Run this once from either Termux or the proot;
+# ~147 MB. Re-running is a no-op for anything already present.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

@@ -7,7 +7,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 
 /**
- * Accessibility service — the app's "eyes". Tracks the foreground package and exposes
+ * Accessibility service, the app's "eyes". Tracks the foreground package and exposes
  * the live window roots for the screen reader. Screen serialization/query logic lives
  * in the screen module; this class is just the connection + a stable handle to the tree.
  */

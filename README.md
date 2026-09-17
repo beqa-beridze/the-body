@@ -2,7 +2,7 @@
 
 An Android app that gives the AI agent on my phone a body. Eyes, hands, and a way to ask me things.
 
-The agent is Claude Code, running in a Fedora that sits on top of Android through Termux and proot. That setup, and why anyone would do it, is a separate write-up: [spirit](https://github.com/beqa-beridze/spirit). This repo is only the app, and you need spirit's first two steps before any of this works.
+The agent is Claude Code, running in a Fedora that sits on top of Android through Termux and proot. That setup, and why anyone would do it, is a separate write-up: [spirit](https://github.com/beqa-beridze/spirit). This repo is only the app.
 
 A CLI agent in a proot can read files and hit APIs all day, but it's blind and it's got no hands. No screen, no taps, can't read a notification, can't answer a message. Termux:API does a bit of that and is flaky about the rest, so I wrote the missing part as a normal Android app.
 
@@ -24,7 +24,7 @@ All of it is a small HTTP API on `127.0.0.1:8765`, loopback only, behind a beare
 
 ## Getting it running
 
-Minimum Android 8 (API 26), built against API 33, tested on exactly one phone, a Galaxy S26 Ultra on Android 16. You need Termux and a proot container first, which is steps 1 and 2 of [spirit's setup](https://github.com/beqa-beridze/spirit/blob/main/docs/setup.md). Starting from nothing, start there.
+Minimum Android 8 (API 26), built against API 33, tested on exactly one phone, a Galaxy S26 Ultra on Android 16. You need Termux and a proot container first, which is steps 1 and 2 of [spirit's setup](https://github.com/beqa-beridze/spirit/blob/main/docs/setup.md).
 
 1. [Build the APK](docs/build.md) on the phone. No Android Studio, no Gradle. There's no prebuilt one to download and that's on purpose, reasons are in that doc.
 2. [Install it and flip the six switches](docs/install.md) Android wants. The app walks you through them and reads four of them back from the OS so it knows they really took.
@@ -41,7 +41,7 @@ body notifs            # what is in the tray
 
 `client/body` is that wrapper. It pretty-prints the screen so the agent doesn't have to chew through raw JSON. Drop it on PATH and point `BODY_TOKEN_FILE` at your token file.
 
-The wrapper covers reading and acting. The gated routes, so SMS, notification replies and `/ask`, deliberately have no one-line verb because they need the two step handshake. Use `body raw` and `body rawpost`, or plain curl.
+The wrapper covers reading and acting. SMS and notification replies have no one-line verb because they need the two step handshake first. `/ask` doesn't either, for a different reason: you post a question and then poll for the answer. All three go through `body raw` and `body rawpost`, or plain curl.
 
 [docs/api.md](docs/api.md) has the full route list, every parameter and every error string. There's a table of every route near the top, start there.
 
@@ -68,12 +68,12 @@ There's also multi-display support, which lets the agent read and work on a hidd
 
 ## The AI part
 
-This app was built with AI help, most of it by Claude Code running on the phone it was being written for, which is a bit recursive but that's genuinely how it went. I did the design and the deciding, and all the testing happened on a real phone. The whole project is an agent and me sharing one machine, so it'd be strange to pretend otherwise.
+This app was built with AI help, most of it by Claude Code running on the phone it was being written for, which is a bit recursive but that's genuinely how it went. I said what to build and every bit of it got tested on a real phone, because there was no other way to find out if a tap had landed.
 
 ## What's wrong with it
 
 - One physical screen. When the agent drives the UI you're sat there watching it happen. The hidden-display work exists to fix that and it isn't finished.
-- Samsung kills background services when it feels like it, even with battery optimisation off. The foreground service and the boot receiver get it back most of the time.
+- The service gets killed every few days no matter what you set. The foreground notification and the boot receiver bring it back most of the time; a mid-afternoon kill needs something outside the app to notice.
 - It sees whatever is on your screen, and it does not filter or redact any of it. Screen text comes back exactly as the accessibility service read it, password fields included. Treat the token like a password, and that's why it's loopback only.
 - Most failures come back as HTTP 200 with `"ok": false`, which is not what you'd expect. Read the `ok` field, not the status code.
 

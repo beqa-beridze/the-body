@@ -14,12 +14,12 @@ import java.util.concurrent.TimeUnit
  * Known-answer test for [MediaSessionReader].
  *
  * `/media` returning `{"count":0}` on a device where nothing is playing is the correct
- * answer, but it proves only that getActiveSessions() was permitted — it never exercises
+ * answer, but it proves only that getActiveSessions() was permitted. It never exercises
  * the metadata/playback-state extraction. So this publishes a MediaSession with metadata
  * we chose, reads it back through the SAME reader a caller uses, and releases it.
  *
  * Silent and request-scoped by construction: state is PAUSED, no audio focus is requested,
- * no media notification is posted, and `release()` runs in a `finally` — the session
+ * no media notification is posted, and `release()` runs in a `finally`. The session
  * cannot outlive the HTTP request that created it.
  */
 object MediaSelfCheck {

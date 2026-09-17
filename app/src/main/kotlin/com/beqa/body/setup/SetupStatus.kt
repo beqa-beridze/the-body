@@ -53,9 +53,9 @@ object SetupStatus {
             Item(
                 key = "restricted",
                 title = "Allow restricted settings",
-                detail = "Samsung/Android blocks sideloaded apps from some toggles — " +
+                detail = "Samsung/Android blocks sideloaded apps from some toggles, " +
                         "in the app's App info screen, tap the ⋮ menu → Allow restricted settings.",
-                done = isAcked(ctx, "restricted"), // not programmatically queryable — user marks it done
+                done = isAcked(ctx, "restricted"), // not programmatically queryable, user marks it done
                 actionLabel = "Open app info",
                 fixIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(pkgUri),
                 ackable = true
@@ -65,7 +65,7 @@ object SetupStatus {
                 title = "Turn off Auto Blocker",
                 detail = "Samsung Auto Blocker blocks sideloading and some permissions. " +
                         "Settings → Security and privacy → Auto Blocker → off.",
-                done = isAcked(ctx, "autoblocker"), // informational — user marks it done
+                done = isAcked(ctx, "autoblocker"), // informational, user marks it done
                 actionLabel = "Open security settings",
                 fixIntent = securitySettingsIntent(ctx),
                 ackable = true

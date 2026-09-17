@@ -11,12 +11,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * M8e — what is playing right now.
+ * M8e, what is playing right now.
  *
  * `MediaSessionManager.getActiveSessions()` normally demands MEDIA_CONTENT_CONTROL
  * (a privileged permission we cannot get). The documented escape hatch: an ENABLED
  * notification listener may pass its own ComponentName and is allowed through. That is
- * exactly what this app is, so this endpoint costs zero new permissions — but it fails
+ * exactly what this app is, so this endpoint costs zero new permissions, but it fails
  * hard the moment the listener is disabled, which is why SecurityException is mapped to
  * `not_enabled_listener` rather than swallowed.
  */

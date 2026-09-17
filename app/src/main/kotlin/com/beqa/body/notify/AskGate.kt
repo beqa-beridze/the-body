@@ -25,19 +25,19 @@ import java.security.SecureRandom
  * agent does NOT grab my real screen. It ASKS ME and nags until I answer. That escape
  * hatch was posted through `termux-notification`, whose channel on this device is
  *   NotificationChannel{mId='termux-notification', mImportance=1, mOriginalImp=3, mUserLockedFields=0}
- * IMPORTANCE_MIN: no sound, no heads-up, no peek. mUserLockedFields=0 means I never muted it —
- * the app lowered its own channel — and an app can never RAISE a channel's importance after
+ * IMPORTANCE_MIN: no sound, no heads-up, no peek. mUserLockedFields=0 means I never muted it,
+ * the app lowered its own channel, and an app can never RAISE a channel's importance after
  * creation, nor can `cmd notification` set importance from adb. So the one hard rule's alarm was
  * silent and there was no way to fix it in Termux:API. This class moves the alarm into OUR app,
  * onto a channel WE create, at IMPORTANCE_HIGH, with sound and vibration and two real buttons.
  *
- * "NO AUTOMATIC NOTIFICATIONS" — STRUCTURALLY, NOT BY POLICY
+ * "NO AUTOMATIC NOTIFICATIONS", ENFORCED BY THE SHAPE OF THE CLASS
  * ----------------------------------------------------------
  * I do not want automatic notifications. This channel is allowed to make noise
  * precisely because it can only ever be used for one thing, and that is enforced by shape:
  *
  *   1. There is NO informational mode. Every post creates a YES/NO gate with a pending answer.
- *      You cannot send a message through here — only a question that somebody must answer.
+ *      You cannot send a message through here, only a question that somebody must answer.
  *   2. ONE pending ask at a time. A second post while one is outstanding is refused (the caller
  *      is told which ask is already pending); it cannot stack alarms.
  *   3. A hard cap of MAX_ASKS_PER_HOUR NEW asks per rolling hour. Re-nags of the SAME ask are
@@ -52,7 +52,7 @@ import java.security.SecureRandom
  * ----------
  * The answer is written to SharedPreferences by the BroadcastReceiver, not just held in memory,
  * so an LMK kill between my tap and the caller's next poll does not lose the answer. If it is
- * lost anyway the caller sees "no answer", which means DO NOT PROCEED — the safe default.
+ * lost anyway the caller sees "no answer", which means DO NOT PROCEED, the safe default.
  */
 object AskGate {
 
@@ -134,7 +134,7 @@ object AskGate {
         return manager.getNotificationChannel(CHANNEL_ID) ?: ch
     }
 
-    /** What the OS actually stored — read back, never assumed. */
+    /** What the OS actually stored: read back, never assumed. */
     fun channelInfo(ctx: Context): JSONObject {
         val ch = nm(ctx).getNotificationChannel(CHANNEL_ID)
             ?: return JSONObject().put("exists", false).put("id", CHANNEL_ID)
@@ -218,7 +218,7 @@ object AskGate {
     }
 
     /**
-     * Re-alert the SAME ask. Free of the hourly cap — nagging until I answer is the rule's
+     * Re-alert the SAME ask. Free of the hourly cap, because nagging until I answer is the rule's
      * literal requirement ("spam me until i answer"). Re-notifying an existing id re-alerts
      * because the notification does NOT set onlyAlertOnce.
      */
@@ -291,7 +291,7 @@ object AskGate {
     /**
      * The PendingIntent a button carries. FLAG_IMMUTABLE: these need no RemoteInput, so nothing
      * outside may rewrite them. Distinct action + distinct data (askgate://<id>/<answer>) keeps
-     * YES and NO from collapsing into one another — PendingIntent equality ignores extras.
+     * YES and NO from collapsing into one another, because PendingIntent equality ignores extras.
      */
     private fun intentFor(ctx: Context, id: String, action: String): PendingIntent =
         PendingIntent.getBroadcast(
@@ -307,7 +307,7 @@ object AskGate {
     /**
      * Fire the EXACT PendingIntent the button holds, without touching display 0.
      *
-     * This is not a simulation of the answer — it is the same PendingIntent object, resolved with
+     * This is not a simulation of the answer. It is the same PendingIntent object, resolved with
      * FLAG_NO_CREATE so it only succeeds if the notification really registered one, then .send().
      * That is precisely what SystemUI does when I tap the button. It proves the whole callback
      * path (PendingIntent -> receiver -> persisted answer -> notification cancel -> bridge status)
@@ -358,7 +358,7 @@ object AskGate {
             .putString(K_ANSWER, answer)
             .putLong(K_ANSWERED, System.currentTimeMillis())
             .apply()
-        // (5) stop nagging the instant I answer — do not wait for the caller to poll.
+        // (5) stop nagging the instant I answer, do not wait for the caller to poll.
         try { nm(ctx).cancel(NOTIF_ID) } catch (_: Throwable) {}
     }
 
@@ -415,7 +415,7 @@ object AskGate {
 
 /**
  * Receives the YES/NO button press. Manifest-registered and NOT exported, so nothing outside this
- * app can forge an answer — including `am broadcast` from the adb shell. The only two ways in are
+ * app can forge an answer, including `am broadcast` from the adb shell. The only two ways in are
  * a real tap on the notification and AskGate.fireActionPendingIntent(), which is reachable solely
  * over the token-gated loopback bridge.
  */

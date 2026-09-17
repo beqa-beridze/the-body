@@ -72,7 +72,7 @@ class OnboardingActivity : Activity() {
         // Summary
         root.addView(TextView(this).apply {
             text = if (doneCount == items.size && items.isNotEmpty())
-                "${items.size} of ${items.size} complete\nAll set — you can close this."
+                "${items.size} of ${items.size} complete\nAll set, you can close this."
             else
                 "$doneCount of ${items.size} complete"
             textSize = 15f

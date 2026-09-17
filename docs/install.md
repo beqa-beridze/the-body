@@ -11,6 +11,8 @@ The app can check four of them against the OS so it knows if they're actually on
 5. Enable the accessibility service. That's the one that lets the app read and navigate the screen.
 6. Enable notification access. Lets it read and reply to notifications, and it's what makes the media endpoint work too.
 
+There's a seventh the app never asks for, because I only wanted it on when I'd thought about it. If you want `/sms/send` to work, go to App info, Permissions, SMS, and allow it by hand. Skip it and that one route returns `sms_failed` while everything else carries on fine.
+
 <p align="center">
   <img src="screenshots/setup-6-of-6.png" width="400" alt="the setup screen with all six permissions granted">
 </p>
@@ -55,13 +57,15 @@ Careful with the rate limiter while you're fiddling. Five failed auth attempts i
 
 - The ongoing notification is the foreground service. If it disappears, Android killed the app and the bridge went with it.
 - Samsung will still kill it every few days regardless of the battery setting. The boot receiver brings it back after a reboot, but a mid-day kill needs something watching from outside.
-- After a reboot the bridge doesn't come back until you unlock the phone once, because that's when Android bothers to send the boot broadcast.
+- After a reboot it waits for your first unlock. That's an Android rule, not something the app chose.
 
 ## Anything on the phone can talk to it
 
 Worth being straight about this before you install it. The bridge listens on loopback, so nothing on your network can reach it, but loopback is not private on Android. Any other app on the same phone can open `127.0.0.1:8765`, and the bearer token is the only thing standing between it and a live feed of your screen and your messages.
 
-That's why the token is 24 random bytes, why it's compared in constant time, why five bad attempts lock the port for five minutes, and why the token lives in a file you chmod rather than in an environment variable or a command line. If you don't trust everything installed on the phone, don't run this on it.
+So the token is 24 random bytes and gets compared in constant time. Five bad attempts lock the port for five minutes. And it lives in a file you chmod, not in an environment variable or on a command line, where any process that can read `/proc` could pick it up.
+
+One more thing that belongs here: the APK is built debuggable. That's how the on-device toolchain produces it. It means anyone who can get an adb shell on the phone can run `run-as com.beqa.body` and read the token straight out of the app's own data, no matter how you chmod'd the file. So turn wireless debugging back off once you're done with the phantom-process setting, and if there's an app on the phone you don't trust, don't run this on it.
 
 ## Putting it back
 

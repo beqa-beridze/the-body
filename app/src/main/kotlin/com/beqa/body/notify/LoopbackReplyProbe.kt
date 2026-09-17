@@ -21,7 +21,7 @@ import org.json.JSONObject
  * this device. The only honest way to test it without messaging a real human is to have
  * the app post a notification to ITSELF carrying a real RemoteInput action, drive the
  * normal POST /notifications/reply path against it, and then check whether the text came
- * back out the other end. Same code, same allowlist, same confirmation gate — the only
+ * back out the other end. Same code, same allowlist, same confirmation gate. The only
  * thing that changes is that the recipient is a BroadcastReceiver in this process.
  *
  * Kept deliberately quiet on a live daily-driver phone:

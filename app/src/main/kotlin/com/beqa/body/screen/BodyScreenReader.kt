@@ -7,7 +7,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * BodyScreenReader — converts the live accessibility tree into compact JSON
+ * BodyScreenReader converts the live accessibility tree into compact JSON
  * using the Set-of-Marks technique: every emitted element gets a small integer
  * label, and the label -> StableKey map lets callers re-resolve the live node
  * later (resolveChecked / describeNode) without brittle paths. Labels are
@@ -189,14 +189,14 @@ object BodyScreenReader {
 
     /**
      * Generation-checked resolve for a raw client id ("G-N" qualified, or bare
-     * "N" for back-compat with older clients — bare ids skip the generation
+     * "N" for back-compat with older clients. Bare ids skip the generation
      * check and keep only the weaker treepath+class validation).
      *
      * Returns (node, null) on success, or (null, errorCode):
-     *   "stale_generation" — another client rebuilt the map since this id was
+     *   "stale_generation": another client rebuilt the map since this id was
      *     issued; acting on it could hit the WRONG element. Re-read the screen.
-     *   "node_stale"       — id unknown in the current map / tree changed.
-     *   "bad_id"           — unparseable id.
+     *   "node_stale":       id unknown in the current map / tree changed.
+     *   "bad_id":           unparseable id.
      * The generation comparison happens under the same lock that rebuilds the
      * map, so a concurrent read_screen cannot slip between check and lookup.
      */
@@ -444,8 +444,8 @@ object BodyScreenReader {
     }
 
     /**
-     * Per-node contribution uses ONLY role|text|desc|rid|state|checked —
-     * no labels, no bounds — combined with child hashes in order, so the hash
+     * Per-node contribution uses ONLY role|text|desc|rid|state|checked,
+     * no labels, no bounds. Combined with child hashes in order, so the hash
      * is stable under re-labeling and scroll jitter.
      */
     private fun hashTree(node: AccessibilityNodeInfo?, includeSystemUi: Boolean): Int {
