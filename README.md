@@ -10,6 +10,10 @@ A CLI agent in a proot can read files and hit APIs all day, but it's blind and i
 - **Hands.** Tap, long press, type and scroll all work off an element id from the last read. Swipe takes a direction, back and home are key presses, and launching an app takes a package name. Everything reports back whether the screen actually changed.
 - **A mouth.** It can reply to a messaging notification inline without opening the app, or send an SMS. Both take a two step confirmation so it can't fire one off by accident.
 - It can ask me something. That's one route, `/ask`, which posts a loud yes/no notification with real buttons. It's a question or nothing, it can't use it to just tell me things, and it's capped at six an hour.
+
+<p align="center">
+  <img src="docs/screenshots/ask-notification.png" width="620" alt="the /ask notification on the lock screen, with YES and NO buttons, above the app's ongoing service notification">
+</p>
 - Senses: battery, screen state, what's playing, and the phone's actual sensors.
 
 All of it is a small HTTP API on `127.0.0.1:8765`, loopback only, behind a bearer token the app shows you and rotates on request. From inside the proot the agent just runs curl.

@@ -11,6 +11,10 @@ The app can check four of them against the OS so it knows if they're actually on
 5. Enable the accessibility service. That's the one that lets the app read and navigate the screen.
 6. Enable notification access. Lets it read and reply to notifications, and it's what makes the media endpoint work too.
 
+<p align="center">
+  <img src="screenshots/setup-6-of-6.png" width="400" alt="the setup screen with all six permissions granted">
+</p>
+
 Open the app at least once. That is what starts the bridge, not the switches, so if you sideload it and never tap the icon then nothing is listening and `/health` below just times out. Once it says 6 of 6 complete, every capability is granted too. It comes back on boot after that.
 
 ## The token
